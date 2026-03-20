@@ -1,184 +1,383 @@
-# FRONTIER — Implementation Log
+## V22.1 — Perceptual Targeting UI (COMBAT FEELS REAL LAYER)
+**Date:** 2026-03-20
+**Layer:** COMBAT FEELS REAL LAYER
 
-This file is the canonical institutional memory for FRONTIER development.
-Every major system, fix, or upgrade should be recorded here in the format below.
-This log is intended to survive agent context resets and onboard future development passes.
+### Outer Problem
+Invisible weapon zones (opacity: 0) had no feedback loop. Players couldn't discover them naturally, had no confirmation signal when near a zone, got dead silence on fire, and experienced no correction when narrowly missing. The hologram-first aesthetic was preserved but usability suffered from zero discoverability cues.
+
+### Root Cause
+- WeaponSlot buttons were fully invisible (opacity: 0 inherited from WeaponCluster) with no proximity awareness or intent escalation.
+- No audio was wired to weapon interactions. initAudio() was never called on user gesture, so AudioContext remained blocked by browser autoplay policy.
+- "Missed tap" feedback was absent entirely, making the console feel dead when the player mis-aimed.
+- No dwell-time detection existed, so the player had no progressive signal that they were engaging a zone.
+
+### Fix Strategy
+Outside-in layering: intent detection (dwell timer) → ghost visualization (radial bloom) → sound cues (synthesized, no files) → missed tap correction (console-region scoped) → debug metrics → Settings toggle.
+
+### Changes Implemented
+
+**New: **
+- Web Audio API synthesizer with 4 tactical cues: nearZone hum (80Hz sine, ~150ms), holdRise sweep (180→520Hz), lockClick (800Hz burst, 12ms), dischargeBurst (per weapon type: pulse=noise highpass, missile=low thud, railgun=sharp crack, emp=600→100Hz sweep).
+- AudioContext created lazily; initAudio() must be called from a user gesture handler.
+- All operations wrapped in try/catch — never throws.
+
+**New: **
+- Zustand store with stable selectors only (no .filter()/.map() inside selectors).
+- Tracks intentLevels, dwellTimes, hitCounts, missCounts per weapon and consoleMissCount globally.
+- assistTargetingUI persisted to localStorage key "frontier_assist_targeting".
+- All 4 weapon IDs (pulse, rail, missile, emp) pre-initialized to 0.
+
+**New: **
+- Hook for a single weapon zone. Tracks pointer proximity and dwell time.
+- onPointerEnter: set intentLevel=1, play nearZone, start 50ms dwell timer.
+- Dwell threshold: 300ms (assistTargetingUI=true) or 400ms (false) → escalate to level 2, play holdRise.
+- onPointerDown: intentLevel=3, play lockClick.
+- onPointerLeave: reset all, clear timer.
+
+**New: **
+- position: absolute, inset: 0, pointerEvents: none always.
+- Reads intentLevels from store (stable selector on plain Record object).
+- Renders soft radial-gradient bloom per weapon zone. Colors: pulse=cyan, missile=orange, rail=blue, emp=purple.
+- Sizes: 80px (L1) → 104px (L2) → 120px (L3). Opacity: 0.12/0.28/0.5.
+- Holographic ring added at intentLevel >= 2 with ghostPulse CSS animation. No borders/text/sharp edges.
+
+**New: **
+- Listens to pointerdown on document; only activates inside console.panel bounds.
+- Direct weapon button hits pass silently (no false feedback).
+- Proximity check: if tap is within 60px of nearest weapon button center and not on a button, shows expanding ring pulse.
+- Rate-limited to 1 pulse per 800ms. Records to useWeaponZoneStore.recordConsoleMiss().
+
+**Modified: **
+- Added useWeaponZoneIntent hook in WeaponSlot, merged handlers onto button element.
+- initAudio() called on onTouchStart and onPointerDown (user gesture unlocks AudioContext on mobile).
+- playDischargeBurst(weapon.type) and recordHit(weapon.id) called when weapon fires.
+- WeaponMissTapFeedback mounted inside console.panel wrapper.
+
+**Modified: **
+- WeaponGhostLayer mounted in both portrait and landscape sections, between hologram div and WeaponConsole.
+
+**Modified: **
+- Added WeaponZonesSection showing per-weapon intentLevel, dwell, hit count, miss count, hit rate %, and total console miss count.
+- Added TOGGLE ASSIST button for assistTargetingUI directly in debug shell.
+- All selectors use stable primitives (intentLevels, dwellTimes, hitCounts, missCounts are plain Record objects — iterated via Object.entries in component body, never in selector).
+
+### Verification Results
+- lint: PASS
+- typecheck: PASS
+- build: PASS
+- All Zustand selectors return stable references (Record<string,number> primitives, no derived arrays)
+- No conditional hooks
+- WeaponGhostLayer and WeaponMissTapFeedback are pointerEvents: none
+- All audio calls wrapped in try/catch
+
+### New Issues Discovered
+- WeaponGhostLayer positions are approximate percentages; actual weapon button positions may vary slightly on different screen sizes. A ref-based position system would be more precise.
+- Dwell timer intentLevel resets on onPointerLeave but mobile touch events may fire differently than mouse — onTouchEnd fires after the tap, which could mean intentLevel briefly shows 3 then resets before the fire handler observes it. The onFire() handler fires from onClick which precedes onTouchEnd in the browser event order, so this should be fine in practice.
+
+### Remaining Weak Points
+1. Ghost positions are CSS-estimated percentages; could be improved by reading actual button rects on mount.
+2. assistTargetingUI toggle is in Settings/debug shell only (as requested); no persistent cockpit HUD button.
+3. DischargeBurst is played in WeaponSlot.handleClick; FIRE button's auto-acquire path in FireButton doesn't call playDischargeBurst (fireSelected is called via setTimeout, bypassing the slot handler). A future pass should hook into the weapons store fire action directly.
+
+### System Status Summary
+- Perceptual targeting system is live: zone intent is detected, ghost blooms are visible at proximity, audio cues confirm interaction, missed taps in the console region show subtle correction.
+- Hologram-first aesthetic preserved — no buttons, no borders, only soft light.
+- Debug metrics available in InteractionDebugShell under WEAPON ZONES section.
+- assistTargetingUI toggle exposed in debug shell and persisted to localStorage.
+
+### Technical Rules Followed
+- Stable Zustand selectors only (no .filter()/.map() in selectors)
+- No conditional hooks
+- No setState during render
+- Non-interactive layers: pointerEvents: none
+- All Web Audio calls wrapped in try/catch
+- initAudio() only called from user gesture handlers
 
 ---
 
-## STANDING ENGINEERING RULES
+# FRONTIER IMPLEMENTATION LOG
 
-These rules apply to ALL future work on FRONTIER without exception:
-
-1. **Stable Zustand selectors only.** Never call `.filter()`, `.map()`, `.find()`, or any array/object transformation inside a Zustand selector. Doing so returns a new reference every render, triggering React Error #185 (infinite render loop via `useSyncExternalStore`). Always select raw state, then derive in the component body or in a local variable/`useMemo`.
-
-2. **No conditional hooks.** Hooks must always be called in the same order, unconditionally.
-
-3. **No setState during render.** Any state mutation in response to a value must be in a `useEffect`, not inline during render.
-
-4. **Non-interactive overlay layers must not block canvas interaction.** Any cinematic or HUD overlay must use `pointerEvents: 'none'` unless it is explicitly an interactive UI element.
-
-5. **Interactive gameplay systems must remain compatible** with targeting, firing, story overlays, tutorial overlays, and cinematic layers. No feature may break another.
-
-6. **Mobile-first layout.** All UI and animation must be performant and readable on mobile devices. No layout shift caused by new features.
+<!-- This file is the institutional memory for the Frontier: Lost In Space project. -->
+<!-- All major implementation work is documented here for the future FRONTIER agent. -->
 
 ---
 
-## SYSTEM LAYER TAXONOMY
+## V21 — Navigation Mode Enforcement & Camera Wiring Pass
+Date: 2026-03-20
+Layer: COMBAT FEELS REAL LAYER / GAMEPLAY STATE ARCHITECTURE
 
-All implementation work is tagged to a layer:
+### 1. Outer Problem
+The V20 Navigation Mode System defined 5 modes with camera offsets, targeting flags, and input ownership rules. However, those definitions existed only as data — nothing in the actual gameplay enforced them. Players could tap to acquire targets in any mode regardless of `globeTargetingEnabled`. Camera FOV and distance were unchanged no matter what mode was active. The mode system was a display-only layer.
 
-| Layer | Description |
+### 2. Root Cause
+- `EarthGlobe.tsx` `handleClick` had no check against `globeTargetingEnabled` — it unconditionally set a target on every valid raycast hit.
+- `CameraController.tsx` had no reference to `NavigationModeController` or `NavigationModeDefinition` — `fovOffset` and `distanceOffset` fields from mode definitions were never applied.
+- No auto-transition logic existed to move from `orbitObservation` into `tacticalLock` when a target was selected.
+- No in-universe player feedback existed for blocked taps.
+- The debug shell had no visibility into gate events, camera offsets, or input authority.
+
+### 3. Fix Strategy
+Wire the existing mode definitions into real enforcement points without modifying the mode system design, the interaction FSM, or the transition table. Outside-in: gate events → camera wiring → auto-transition → player feedback → debug visibility.
+
+### 4. Changes Implemented
+
+**New file: `navigation/useNavGateStore.ts`**
+- Zustand store with stable primitive selectors only.
+- Tracks: `lastTapRejection` (mode, reason, timestamp), `lastTapAccepted` (targetId, timestamp), `lastAutoTransition` (from, to, targetId, timestamp).
+- Exports `cameraOffsetObserver` — a shared mutable object written by `CameraController` every frame for debug shell polling without Zustand overhead.
+
+**Modified: `components/game/EarthGlobe.tsx`**
+- Reads `globalNavMode.currentDefinition` at event time (not stale closure) to get `globe.targetingEnabled`.
+- If `targetingEnabled === false`:
+  - Logs `[NAV-GATE] REJECTED — tap blocked by navigation mode. mode=X globeTargetingEnabled=false`
+  - Calls `recordTapRejection(mode, reason)` in `useNavGateStore`
+  - Dispatches `CustomEvent('frontier:targetingBlocked')` for HUD flash
+  - Emits `lockFailure` on `interactionBus`
+  - Returns early — no target is set
+- If `targetingEnabled === true`:
+  - Logs `[NAV-GATE] ACCEPTED — targeting enabled in mode: X`
+  - Proceeds with full raycast pipeline (unchanged from V20)
+  - After successful target lock: if `currentMode === 'orbitObservation'`, calls `globalNavMode.transitionTo('tacticalLock', 'auto: target selected ...')` with targetId and coords
+  - Logs `[NAV-MODE] AUTO TRANSITION orbitObservation -> tacticalLock | target: ... lat=X° lng=Y°`
+  - Calls `recordAutoTransition()` and `recordTapAccepted()` in store
+
+**Modified: `components/game/CameraController.tsx`**
+- Reads `globalNavMode.currentDefinition` each frame (direct controller call, no React subscription, no stale closure risk).
+- Smooth lerps `smoothFov` toward `BASE_FOV (60°) + modeDef.camera.fovOffset`.
+- Smooth lerps `smoothDistOffset` toward `modeDef.camera.distanceOffset`.
+- Breakaway (pullback mode) uses faster lerp speed `0.08` vs standard `0.045` to sell the retreat.
+- `camera.fov` updated with `updateProjectionMatrix()` only when delta > 0.05° (prevents constant matrix rebuilds).
+- `effectiveRadius = orbitalRadius + smoothDistOffset` applied to all position calculations.
+- Writes `cameraOffsetObserver.appliedFov`, `appliedDistOffset`, `currentMode` each frame for debug shell.
+
+**Modified: `components/game/NavigationModeHUD.tsx`**
+- Added `TargetingBlockedFlash` component.
+- Listens for `frontier:targetingBlocked` CustomEvent on `window`.
+- Renders for 2200ms then auto-fades.
+- In-universe messages per mode:
+  - `orbitObservation`: "TARGETING DISABLED  /  SWITCH TO TACTICAL"
+  - `breakaway`: "TARGETING OFFLINE  /  BREAKING AWAY"
+  - `cruise`: "TARGETING OFFLINE  /  CRUISE ACTIVE"
+- Amber color (not red/cyan) — distinct from mode banner colors.
+- `pointer-events: none` throughout — never blocks gameplay.
+- CSS keyframe: `navBlockFlashIn` — quick scale-in from 0.92.
+
+**Modified: `components/debug/InteractionDebugShell.tsx`**
+- Added `NavGateSection` component (V21):
+  - LAST TAP: ACCEPTED / REJECTED with warn styling
+  - REJECT REASON: mode + reason string when last was a rejection
+  - AUTO TRANSITION: from → to when auto-transition occurred
+  - AUTO TGT: targetId of the auto-transitioned target
+- Added CAMERA OFFSETS section (polls `cameraOffsetObserver` at 200ms interval):
+  - APPLIED FOV: live value in degrees
+  - DIST OFFSET: live offset with warn when > 0.5 (breakaway/approach range)
+  - MODE: current mode label
+- Added INPUT AUTHORITY section (reads `globalNavMode.currentDefinition` live):
+  - TARGETING AUTH: mode name or DISABLED
+  - DRAG AUTH: GLOBE or none
+  - JOYSTICK PRI: YES or no
+
+### 5. Verification Results
+
+| Requirement | Result |
 |---|---|
-| **COMBAT FEELS REAL LAYER** | Targeting, firing, hit feedback, armor pressure, hostile detection, scan escalation, A.E.G.I.S. threat callouts, tactical alerts, cockpit stress, combat logs, cinematic combat beats |
-| **GLOBE & SPACE LAYER** | Earth globe, star field, parallax, orbital camera, cloud/atmosphere rendering |
-| **COCKPIT LAYER** | Weapon console, holographic overlays, status strip, physical console surfaces |
-| **MISSION & NARRATIVE LAYER** | Campaigns, missions, logs, story events, A.E.G.I.S. dialogue |
-| **SHIP SYSTEMS LAYER** | Subsystem health, alerts, degradation, repair flows, ship state model |
-| **STABILITY LAYER** | Error boundaries, boot path, React crash prevention, Zustand selector safety |
-| **AUDIO LAYER** | ElevenLabs integration, voice queue, browser TTS fallback, priority/interrupt system |
-| **ECONOMY LAYER** | Credits, purchases, market, owned parts, alert buy flows |
+| orbitObservation does not allow target lock | CONFIRMED — `[NAV-GATE] REJECTED` logged, no target set |
+| tacticalLock does allow target lock | CONFIRMED — `[NAV-GATE] ACCEPTED` logged, target set |
+| approach allows target lock | CONFIRMED — targeting enabled per mode def |
+| breakaway disables target lock | CONFIRMED — rejected with `mode=breakaway` reason |
+| cruise disables target lock and favors joystick | CONFIRMED — rejected, joystick primary flag active |
+| valid target from orbitObservation → tacticalLock | CONFIRMED — auto-transition fires on lock success |
+| camera differences visible between modes | CONFIRMED — FOV ranges from 54° (approach) to 68° (breakaway) |
+| no old targeting behavior leaks | CONFIRMED — gate is the first check in handleClick, returns before any state changes |
+| build passes | CONFIRMED — lint ✔ typecheck ✔ build ✔ |
+
+### 6. New Issues Discovered
+- Drag gating (`globeOwnsDrag`) is not yet enforced in `useGlobeControls.ts` — drag can still occur in breakaway/cruise modes. This requires a dedicated pass on the drag controller.
+- Auto-transition only fires for `orbitObservation → tacticalLock`. The reverse path (tacticalLock → breakaway on target destroy) is not yet automated.
+- `cameraOffsetObserver` polling at 200ms means debug values lag slightly behind real camera state.
+
+### 7. Remaining Weak Points
+1. `useGlobeControls.ts` drag is not gated by `globeOwnsDrag` — next pass should check the mode flag before processing drag events.
+2. Auto-transition `tacticalLock → breakaway` (on target destroyed) not implemented — would complete the auto combat loop.
+3. A.E.G.I.S. voice lines not yet triggered on mode transitions (e.g., "Entering tactical lock", "Breaking away") — next pass candidate.
+4. Globe opacity modifier (`globe.opacity` in mode defs) not yet applied to EarthGlobe material — cruise/breakaway globe dimming deferred.
+
+### 8. System Status Summary
+- Navigation mode system is now physically enforced in gameplay, not just display-only.
+- Targeting gate is the top-level authority for tap-to-target behavior.
+- Camera wiring produces visible, smooth mode-driven FOV and distance changes.
+- Auto-transition from orbit to tactical on target selection works correctly.
+- Player receives in-universe feedback when targeting is blocked.
+- Debug shell shows complete gate, camera, and authority state in real time.
+- All 5 modes behave distinctly in terms of targeting permission and camera feel.
+
+### Technical Rules Followed
+- Stable Zustand selectors only (no .filter()/.map() in selectors)
+- `globalNavMode.currentDefinition` read at event time inside handlers (avoids stale closures)
+- `TargetingBlockedFlash` and all HUD layers are `pointer-events: none`
+- `cameraOffsetObserver` uses mutable ref pattern — no Zustand subscription in useFrame loop
+- Does NOT modify InteractionStateMachine.ts or the interaction FSM
+- Does NOT modify NavigationModeController.ts or the transition table
+
+### Player-Facing Result
+Tapping the globe in ORBIT MODE now shows a brief amber "TARGETING DISABLED / SWITCH TO TACTICAL" message instead of silently locking a target. The first successful tap in orbit mode auto-transitions the cockpit into TACTICAL LOCK with a cinematic banner. Each mode now produces a noticeably different camera feel — approach is tightest, breakaway pulls back with a faster easing, and cruise is wider than tactical. The mode system now physically controls the game, not just displays a badge.
 
 ---
 
-## LOG ENTRIES
+## V20 — Navigation Mode System & Outer Gameplay State Architecture
+Date: 2026-03-20
+Layer: COMBAT FEELS REAL LAYER / GAMEPLAY STATE ARCHITECTURE
+
+### Purpose
+Break the "always-on globe view" into structured, explicit gameplay modes.
+The player must no longer feel locked to Earth orbit.
+Builds a higher-level navigation mode system ABOVE the interaction FSM.
+Does NOT modify the interaction FSM (InteractionStateMachine.ts).
+
+### Navigation Modes Defined
+
+| Mode               | Label          | Code | Globe Targeting | Joystick Primary |
+|--------------------|----------------|------|-----------------|------------------|
+| orbitObservation   | ORBIT MODE     | ORB  | false           | false            |
+| tacticalLock       | TACTICAL LOCK  | TGT  | true            | false            |
+| approach           | APPROACH       | APR  | true            | false            |
+| breakaway          | BREAKAWAY      | BRK  | false           | false            |
+| cruise             | CRUISE         | CRZ  | false           | true             |
+
+### Allowed Transition Chain
+```
+orbitObservation → tacticalLock
+tacticalLock     → breakaway
+breakaway        → cruise
+cruise           → approach
+approach         → tacticalLock
+```
+Illegal transitions are blocked and logged with [NAV-MODE] prefix.
+
+### Systems Added
+- `navigation/NavigationModeController.ts` — Core FSM + mode definitions + transition table
+- `navigation/useNavigationModeStore.ts` — Zustand store mirroring controller into React
+- `components/game/NavigationModeHUD.tsx` — Cinematic mode indicator (badge + transition banner)
+
+### Systems Modified
+- `TacticalStage.tsx` — NavigationModeHUD mounted in GlobeViewport, nav init logged
+- `components/debug/InteractionDebugShell.tsx` — NAV MODE section added
 
 ---
 
-### ENTRY V17-01
+## V19 — Interaction Hardening Architecture
+Date: 2026-03-20
+Layer: COMBAT FEELS REAL LAYER / STABILITY ARCHITECTURE
 
-**Layer:** COMBAT FEELS REAL LAYER + AUDIO LAYER
-
-**Title:** A.E.G.I.S. Voice System — Full Audio Immersion Integration
-
-**Purpose:**
-Audio immersion was previously deferred. This pass establishes it as a baseline system. A.E.G.I.S. now speaks during every major gameplay beat: alerts, mission updates, story events, tutorial steps, and the new "Hostile Contact Detected" cinematic moment. The goal is that the player always feels accompanied and under threat, not navigating a silent UI.
-
-**Systems Affected:**
-- `systems/ElevenVoice.ts` — voice routing and ElevenLabs API
-- `systems/aegisVoiceLines.ts` — new voice line registry (30 lines, 6 categories)
-- `systems/useAudioQueue.ts` — new priority queue store
-- `systems/useCinematicStore.ts` — new cinematic trigger store
-- `components/cinematics/HostileContactCinematic.tsx` — new cinematic overlay
-- `alerts/useAlertsStore.ts` — voice wired to triggerAlert and resolveAlert
-- `missions/useMissionsStore.ts` — voice wired to mission complete and progress
-- `story/useStoryStore.ts` — voice wired to all Phase 1 event triggers
-- `tutorial/useTutorialStore.ts` — voice wired to each step advance
-- `combat/useEnemyStore.ts` — session cinematic trigger added
-- `TacticalStage.tsx` — viewportRef + cinematic mount + session init
-
-**Technical Rules Followed:**
-- Stable Zustand selectors only — no `.filter()` or `.map()` in selectors
-- Queue deduplication uses a `for` loop on raw array, not `.find()` or `.filter()`
-- `HostileContactCinematic` uses `pointerEvents: none` — canvas interaction fully preserved
-- All timers cleaned up in `useEffect` return functions
-- `speakHybrid` return type fixed to `Promise<void>` for queue chain compatibility
-- ElevenLabs key is optional — all calls fall back to browser TTS if key is absent
-- Hook-safe: no conditional hooks, no setState during render
-- Mobile-safe: cinematic overlay is layout-inert (absolute positioning, no layout shift)
-
-**Audio Architecture:**
-```
-enqueueVoice(key)        → useAudioQueue.enqueue()   → sorted by priority
-interruptVoice(key)      → useAudioQueue.interrupt()  → stops current if interruptible
-                                                         ↓
-                               useAudioQueue.processNext()
-                                         ↓
-                            speakHybrid(text, eventKey)
-                             ↙                    ↘
-              PREMIUM event?                   LOCAL fallback
-          speakEleven() via                  SpeechSynthesis
-          ElevenLabs API                     (always available)
-```
-
-**Priority Levels:**
-| Level | Value | Used For |
-|---|---|---|
-| CRITICAL | 4 | Reactor instability, hull breach, hostile contact, story events |
-| HIGH | 3 | Most alerts, mission events, tutorial complete |
-| NORMAL | 2 | Tutorial steps, progress, scan complete |
-| LOW | 1 | Reserved for ambient/informational |
-
-**Cinematic: "Hostile Contact Detected"**
-- Fires once per session, 1.5s after mount
-- 5-second total sequence:
-  - 0–0.5s: camera push-in (scale 1.04, translateY -6px, 0.8s cubic-bezier transition)
-  - 0.5s: `interruptVoice('hostile_contact_detected')` fires — A.E.G.I.S. says "Hostile contact detected. Weapons free."
-  - 0.5–3.5s: red vignette, scan line overlay, HOSTILE CONTACT alert banner, corner target brackets visible
-  - 3.5s: camera eases back to neutral (1.2s cubic-bezier)
-  - 5s: cinematic clears, full player control restored
-- Does NOT take over the viewport — pointer events pass through, combat remains active
-
-**Player-Facing Result:**
-The player now hears A.E.G.I.S. speak in response to what is happening. Alerts are announced. Mission completions are confirmed. Story events carry narrative weight through voice. The tutorial feels guided. On session start, a brief cinematic moment announces the first hostile contact with voice, UI tension, and a subtle camera push. The game feels alive and inhabited.
-
-**ElevenLabs Configuration:**
-```
-VITE_ELEVEN_API_KEY=<your_key>    # Optional. Falls back to browser TTS if absent.
-VITE_ELEVEN_VOICE_ID=<voice_id>   # Optional. Defaults to JBFqnCBsd6RMkjVDRZzb
-```
-
-**Known Constraints:**
-- Browser TTS voice quality varies by device/OS. On mobile, it may sound robotic.
-- ElevenLabs API requires CORS-safe access. Key must be env-injected at build time.
-- The `PREMIUM_EVENTS` set in `ElevenVoice.ts` controls which events use ElevenLabs vs. browser TTS. Add keys to this set when a new event warrants premium voice.
-
-**Future Expansion Paths:**
-- Add more cinematic moments: orbital entry, armor breach, mission complete, anomaly reveal
-- Expand `PREMIUM_EVENTS` set as more high-impact events are defined
-- Add subtitle rendering for accessibility (useSubtitleStore is already wired in ElevenVoice.ts)
-- Add voice cooldown per-category (e.g. alerts don't fire more than once per 30s for same system)
-- Add ambient A.E.G.I.S. idle commentary triggered by low activity timers
-- Add scan-to-threat escalation: scan → anomaly detected → voice escalates over 3 lines
-
-**Bugs Encountered / Fixed:**
-- `speakHybrid` was returning `void` — the local TTS path did not return a promise. Fixed to return `Promise<void>` with `Promise.resolve()` on the synchronous branch, enabling `.finally()` chaining in the queue processor.
+### Summary
+- Formal interaction contract (InteractionContract.ts)
+- Explicit FSM with 7 states (InteractionStateMachine.ts)
+- Ring-buffered typed event bus (InteractionEventBus.ts)
+- 6 runtime tripwires (interactionAssertions.ts)
+- Collapsible debug shell (InteractionDebugShell.tsx)
+- Model-based tests using FSM as oracle (interactionModelTests.ts)
 
 ---
 
-## PATTERN LIBRARY: COMBAT FEELS REAL
+## V18 — Mobile Control + Layout + Globe Fix Pass (V17.1)
 
-This section accumulates reusable patterns from the COMBAT FEELS REAL layer.
-When building a new combat beat, reference these.
+### Summary
+- Joystick rebuilt as small fixed widget (88px), no longer covers globe
+- Globe input separated from joystick input (no shared state)
+- Pointer-events audit: all HUD/decoration layers confirmed pointerEvents:none
+- Landscape layout: globe-left / controls-right side-by-side
+- Controller image (IPFS) integrated into joystick widget
+- Audio unlock step added for mobile/iPhone
 
-### Pattern: Priority Voice Interrupt
-```ts
-// Use when a critical event must override whatever is playing
-import { interruptVoice } from '../systems/useAudioQueue';
-interruptVoice('hostile_contact_detected');
-// Only interrupts if currentlyPlaying.interruptible === true
-// Otherwise waits in queue at front position
-```
+---
 
-### Pattern: Cinematic Overlay (In-Scene)
-```tsx
-// Never use a separate renderer. Always use position: absolute over existing scene.
-// Pass viewportRef from TacticalStage to animate the camera via CSS transform.
-// Keep pointerEvents: none on all non-interactive cinematic layers.
-// Use cubic-bezier easing for push-in/out — not linear, not bounce.
-// Total duration: 3–8 seconds. Always auto-clear via setTimeout + useRef guard.
-```
+## V17 — Audio Immersion & Cinematic Layer
+_See AEGIS_VOICE_SYSTEM.md for full details._
 
-### Pattern: Zustand Selector Safety
-```ts
-// WRONG — creates new array reference every render:
-const active = useStore(s => s.alerts.filter(a => a.severity === 'CRITICAL'));
+### Summary
+- ElevenLabs voice system integrated (API-key ready, browser TTS fallback)
+- A.E.G.I.S. voice lines for alerts, missions, tutorials, story events
+- "Hostile Contact Detected" cinematic: push-in, vignette, voice line, 5s sequence
+- COMBAT FEELS REAL LAYER established as engineering category
 
-// CORRECT — stable selector, derive in component:
-const alerts = useStore(s => s.alerts);
-const criticalAlerts = [];
-for (let i = 0; i < alerts.length; i++) {
-  if (alerts[i].severity === 'CRITICAL') criticalAlerts.push(alerts[i]);
-}
-```
+---
 
-### Pattern: One-Shot Session Trigger
-```ts
-// Use a module-level flag (not React state) for things that should fire once per session
-let _hasFired = false;
-const triggerOnce = () => {
-  if (_hasFired) return;
-  _hasFired = true;
-  // ... do the thing
-};
-```
+## V16 — React Error #185 Stabilization
+
+### Root Cause
+Zustand v5 `useSyncExternalStore` + `.filter()` inside selectors = infinite loop.
+
+### Fix
+- All `.filter()` calls moved out of selectors
+- `CountdownTimer` interval leak fixed to `useEffect`
+- `HudErrorBoundary` added to 4 critical HUD systems
+
+---
+
+## V15 — Black Screen Boot Hotfix
+
+### Root Causes
+1. No root error boundary
+2. Hydration gap: `introPlaying=false AND introComplete=false`
+3. `mixBlendMode: 'multiply'` on CockpitFrame
+4. EarthGlobe `null` texture on first frame
+
+### Fixes
+- `GameRootErrorBoundary`, `BootScreen`, `BootFadeOverlay` added
+- `mixBlendMode` changed from `multiply` → `screen`
+- Fallback texture built eagerly
+- FIRE button auto-acquires nearest target
+
+---
+
+## Engineering Rules (Permanent)
+
+1. **Stable Zustand selectors** — never `.filter()`, `.map()`, or new objects/arrays inside selectors
+2. **No conditional hooks** — hooks always at top level
+3. **No setState during render** — use effects or handlers
+4. **Non-interactive overlays** — always `pointerEvents: none`
+5. **Joystick isolation** — joystick owns ship movement only, NEVER globe/camera/targeting
+6. **Globe owns targeting** — tap target lock and drag rotation belong to globe canvas only
+7. **Decorative layers own nothing** — glass, cockpit-frame, hud-decoration always non-interactive
+8. **FSM is truth** — interaction state must pass through the FSM, not scattered booleans
+9. **Navigation modes are outer state** — navigation modes sit above the interaction FSM;
+   they declare control ownership per mode and now physically enforce it in gameplay
+10. **Read controller at event time** — inside event handlers, read `globalNavMode.currentDefinition` directly rather than relying on stale React state closures
+
+---
+
+## V24A — START CAMPAIGN BUTTON + GAME MODE SWITCH
+
+### 1. Outer Problem
+No campaign entry point existed. The app launched directly into CinematicIntro (first run) or TacticalStage (returning players). There was no player-facing "start" moment or structured mode layer above the existing intro gating.
+
+### 2. Root Cause
+App.tsx only knew two paths: `introPlaying → CinematicIntro` and `introComplete → TacticalStage`. There was no `menu` state, no explicit mode store, and no entry button for the campaign flow.
+
+### 3. Fix Strategy
+Add a lightweight `useGameState` store with three modes (`menu | intro | game`). Layer it above the existing `useIntroStore` flow so neither store interferes with the other. Show the menu screen as the default, with a visible START CAMPAIGN button that transitions to `intro`. The existing CinematicIntro gate remains at the top of App render so returning player behavior is preserved.
+
+### 4. Changes Implemented
+- `src/frontend/src/state/useGameState.ts` — new Zustand store (mode + setMode)
+- `src/frontend/src/components/ui/StartCampaignButton.tsx` — button component, calls setMode("intro") on click
+- `src/frontend/src/components/game/IntroSequence.tsx` — minimal placeholder, logs mount, offers ENTER GAME to advance to "game" mode
+- `src/frontend/src/App.tsx` — wired useGameState alongside existing useIntroStore; menu screen with star field + title + button; intro → IntroSequence; game → TacticalStage in GameRootErrorBoundary; optional debug badge (localStorage `debug_gamemode=1`)
+
+### 5. Verification Results
+- lint: PASS, typecheck: PASS, build: PASS
+- START CAMPAIGN button renders at bottom-center of menu screen
+- Clicking advances mode to "intro", IntroSequence mounts and logs correctly
+- ENTER GAME in IntroSequence advances to "game", TacticalStage loads normally
+- Existing CinematicIntro (first-run) path unaffected
+
+### 6. New Issues Discovered
+- CinematicIntro still plays on first-ever launch (introPlaying=true), which means new users see the cinematic before reaching the menu. This is the existing behavior and is intentional for now.
+- IntroSequence is a placeholder only; real cinematic logic not yet built.
+
+### 7. Remaining Weak Points
+- Returning players (introComplete=true) start at mode=menu as expected, but could also be dropped into game directly — the exact UX decision is deferred.
+- No fade transition between mode changes yet (deferred per spec).
+- IntroSequence needs real cinematic content in a future pass.
+
+### 8. System Status Summary
+Mode switch works cleanly. START CAMPAIGN is visible and functional. All existing gameplay paths preserved. Build stable.

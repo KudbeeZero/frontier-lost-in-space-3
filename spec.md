@@ -1,67 +1,64 @@
-# Frontier - Lost In Space
+# Frontier V27 — Intro Event Engine + Spreadsheet Import + CEP/Memory/Narrator Integration
 
 ## Current State
 
-The app is a React + Three.js spacecraft cockpit game with:
-- `systems/ElevenVoice.ts` — hybrid TTS router (ElevenLabs + browser TTS fallback). Graceful no-key fallback exists. No queue/priority/interrupt system.
-- `audio/aegisVoice.ts` — minimal browser TTS wrapper (unused path)
-- `alerts/useAlertsStore.ts` — alert/degradation system with templates. No voice calls.
-- `missions/useMissionsStore.ts` — mission/log/campaign store. No voice calls.
-- `story/useStoryStore.ts` — Phase 1 story events with A.E.G.I.S. dialogue. No voice calls.
-- `tutorial/useTutorialStore.ts` — step-based tutorial state machine. No voice calls.
-- `combat/useEnemyStore.ts` — satellite/base enemies, return fire, respawn. No cinematic triggers.
-- `intro/CinematicIntro.tsx` — existing 26s cinematic intro using `speakEleven`. Pattern reference.
-- No "Hostile Contact Detected" cinematic exists yet.
-- Standing rule: Zustand selectors must return stable references. No `.filter()` or `.map()` inside selectors.
+- V24A: menu + START CAMPAIGN button, game mode FSM (menu → intro → game)
+- V23.1: CEP 6-level escalation system, LOG/SYSTEM tab, HUD alert banner
+- Intro phase system: 5 phases (DRIFT, SYSTEMS, RECOVERY, ANOMALY, HANDOFF), FSM-driven
+- 10 narrative intro events in `narrativeEvents.ts` tied to phaseTrigger
+- `NarrativeEventPanel.tsx`: A.E.G.I.S.-style HUD decision panel with browser TTS
+- `IntroPhaseController.tsx`: fires all phase events at once, phase timer advances automatically
+- `narrativeVoice.ts`: browser TTS with narrator + aegis character voices, first-line-only policy
+- No `memory/` directory found — V26 memory system files are absent from working tree
 
 ## Requested Changes (Diff)
 
 ### Add
-- `systems/useAudioQueue.ts` — audio queue store with priority, interrupt handling, and per-category locks
-- `systems/aegisVoiceLines.ts` — centralized A.E.G.I.S. voice line registry (all trigger keys + text strings)
-- `components/cinematics/HostileContactCinematic.tsx` — "Hostile Contact Detected" cinematic: camera push-in via CSS transform, UI intensity change, target emphasis overlay, voice line, auto-returns to gameplay in 3–8s
-- Wire voice trigger in `useAlertsStore.ts` — on `triggerAlert` and `resolveAlert`
-- Wire voice trigger in `useMissionsStore.ts` — on `completeMission` and mission start
-- Wire voice trigger in `useStoryStore.ts` — on each Phase 1 event trigger
-- Wire voice trigger in `useTutorialStore.ts` — on each step advance
-- Wire hostile contact cinematic in `useEnemyStore.ts` — on first enemy spawn / respawn wave
-- Mount `HostileContactCinematic` in `TacticalStage.tsx`
+- `narrative/introEventCatalog.ts` — 15 ordered intro events (static catalog), with preserved
+  `importIntroEventsFromXlsx(buffer)` stub for future xlsx parsing
+- `intro/useIntroEventEngine.ts` — runtime engine: tracks introEventIndex (0–14),
+  introSequenceComplete, adaptiveUnlocked, lastCEPDelta, memoryWriteSuccess, voiceActive
+- `memory/usePlayerMemoryStore.ts` — minimal persistent player memory (localStorage);
+  decision history, trait scores (8 traits), event history count
+- 5 new events to complete the 15-event set:
+  - `intro_cognitive_static` (DRIFT, index 2)
+  - `intro_comms_fragment` (SYSTEMS, index 5)
+  - `intro_oxygen_variance` (RECOVERY, index 7)
+  - `intro_star_calibration` (RECOVERY, index 8)
+  - `intro_threshold_crossing` (HANDOFF, index 14 — final)
 
 ### Modify
-- `systems/ElevenVoice.ts` — integrate with `useAudioQueue` for queue/priority/interrupt; keep all existing fallback logic intact
-- `systems/useShipSystemsStore.ts` — add voice call on critical subsystem degradation (if not already present)
+- `narrative/GameEvent.ts` — add `introIndex?: number`, `tags?: string[]`
+- `narrative/narrativeEvents.ts` — import from introEventCatalog; merge catalog events;
+  original 5 phase-1 events preserved for adaptive pool
+- `narrative/useNarrativeStore.ts` — on selectChoice: auto-record to memory store,
+  set lastCEPDelta in engine, notify engine on dismissEvent
+- `components/game/IntroPhaseController.tsx` — use intro event engine; fire events
+  in locked order per phase; mark engine complete when all 15 done
+- `components/debug/InteractionDebugShell.tsx` — add INTRO ENGINE debug section:
+  event index, active event id, intro phase, voice state, lastCEPDelta, memory write,
+  adaptive locked/unlocked, sequence complete flag
 
 ### Remove
-- Nothing removed. `audio/aegisVoice.ts` kept as-is (legacy path, not breaking anything).
+- Nothing removed
 
 ## Implementation Plan
 
-1. **`systems/aegisVoiceLines.ts`** — registry of all trigger keys mapped to voice line text. Categories: `alert`, `mission`, `story`, `tutorial`, `combat`, `cinematic`. Includes `hostile_contact_detected` key.
-
-2. **`systems/useAudioQueue.ts`** — Zustand store:
-   - Queue of `{ id, text, eventKey, priority, interruptible }` items
-   - Priority levels: `CRITICAL=4`, `HIGH=3`, `NORMAL=2`, `LOW=1`
-   - `enqueue(item)` — inserts by priority, dedupes by eventKey
-   - `interrupt(item)` — stops current, plays immediately
-   - `processNext()` — pops highest priority item, calls `speakHybrid`, marks playing
-   - `onVoiceComplete()` — advances queue
-   - No `.filter()` or `.map()` in selectors
-
-3. **`systems/ElevenVoice.ts`** — replace direct `speakHybrid` calls in stores with `enqueue`/`interrupt` from the queue. Keep ElevenLabs fetch + fallback logic unchanged.
-
-4. **Store wiring (alerts/missions/story/tutorial)** — each store action that should trigger voice calls `enqueueVoice(eventKey, text, priority)` after its state mutation. Never inside selectors.
-
-5. **`components/cinematics/HostileContactCinematic.tsx`**:
-   - Triggered by `useCinematicStore` flag `hostileContactActive`
-   - Renders as `position: absolute` overlay inside existing viewport (no viewport takeover)
-   - Phase 1 (0–0.5s): target highlight ring appears on active enemy position
-   - Phase 2 (0.5–2s): viewport container gets a subtle scale(1.04) + translateY(-8px) push-in via CSS transition
-   - Phase 3 (0.5s): UI intensity boost — alert bar glows brighter, reticle sharpens, vignette deepens
-   - Phase 4 (1s): A.E.G.I.S. voice line fires via `interrupt()` — "Hostile contact detected. Weapons free."
-   - Phase 5 (3–5s): camera eases back to normal transform
-   - Phase 6 (5–8s): cinematic flag clears, full player control restored
-   - Returns cleanup function on unmount
-
-6. **`useEnemyStore.ts`** — on first satellite activation (session start) and on enemy respawn wave, set `hostileContactActive = true` in cinematic store.
-
-7. **`TacticalStage.tsx`** — mount `<HostileContactCinematic />` inside the viewport container. Apply camera transform to viewport wrapper div based on cinematic store state.
+1. Extend `GameEvent.ts` with `introIndex` and `tags` fields
+2. Create `introEventCatalog.ts` with all 15 events indexed 0–14, tagged, with
+   `cep_delta` curve: dormant in DRIFT, slight escalation in SYSTEMS, recovery calm,
+   tension in ANOMALY, commitment in HANDOFF; xlsx import stub preserved
+3. Update `narrativeEvents.ts` to re-export catalog events alongside adaptive pool events
+4. Create `usePlayerMemoryStore.ts` — persisted to `frontier_memory_v1` localStorage key;
+   8 trait scores (clamped 0–100), decisionHistory array, totalDecisions counter;
+   `recordDecision()`, `updateTrait()`, `getTraitScore()` helpers
+5. Create `useIntroEventEngine.ts` — Zustand store; knows all 15 event IDs in order;
+   `onPhaseEnter(phase)` pre-loads phase-eligible events; `onEventDismissed(id)` fires
+   next eligible event for current phase; `completeSequence()` sets flags and logs handoff;
+   auto-subscribes to narrative store activeEventId to detect dismissals
+6. Modify `useNarrativeStore.ts` — in `selectChoice`: call `recordDecision` on memory store,
+   call engine `setLastCEPDelta(delta)`; in `dismissEvent`: call engine `onEventDismissed`
+7. Modify `IntroPhaseController.tsx` — call `engine.onPhaseEnter(phase)` on phase change
+   instead of firing all events at once; engine manages sequencing
+8. Add INTRO ENGINE section to `InteractionDebugShell.tsx`
+9. After build passes: write `docs/IMPLEMENTATION_LOG.md`
