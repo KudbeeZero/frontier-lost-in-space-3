@@ -61,6 +61,7 @@ import { useShipSystemsStore } from "./systems/useShipSystemsStore";
 import { useTacticalLogStore } from "./tacticalLog/useTacticalLogStore";
 import TutorialPromptModal from "./tutorial/TutorialPromptModal";
 import { useTutorialStore } from "./tutorial/useTutorialStore";
+import { bootTrace } from "./utils/bootTrace";
 
 const DPR: [number, number] = [1, 2];
 
@@ -462,6 +463,7 @@ export default function TacticalStage() {
   ]);
 
   useEffect(() => {
+    bootTrace("TacticalStage mounted");
     console.log("[TacticalStage] mounted");
     const t = setTimeout(() => {
       if (!sceneReadyRef.current) {

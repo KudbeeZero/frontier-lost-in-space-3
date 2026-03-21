@@ -1,17 +1,25 @@
-import { Component, type ReactNode, useEffect, useRef, useState } from "react";
+import { Component, type ReactNode, useEffect, useRef } from "react";
 import TacticalStage from "./TacticalStage";
+import BootLoadingScreen from "./boot/BootLoadingScreen";
+import { runBootSequence } from "./boot/BootManager";
+import { useBootStore } from "./boot/useBootStore";
+import DiagnosticHUD from "./components/debug/DiagnosticHUD";
+import SpacePhysicsDebug from "./components/debug/SpacePhysicsDebug";
 import CockpitOverlay from "./components/game/CockpitOverlay";
+import GameStateDebugOverlay from "./components/game/GameStateDebugOverlay";
 import IntroSequence from "./components/game/IntroSequence";
 import MenuBackground from "./components/game/MenuBackground";
 import StartCampaignButton from "./components/ui/StartCampaignButton";
 import CinematicIntro from "./intro/CinematicIntro";
 import { useIntroStore } from "./intro/useIntroStore";
 import { useGameState } from "./state/useGameState";
+import { bootTrace } from "./utils/bootTrace";
 
-// ─── Root error boundary ──────────────────────────────────────────────────────
+// ── Error Boundary ──────────────────────────────────────────────────────────
 interface EBState {
   hasError: boolean;
   message: string;
+  stack: string;
 }
 class GameRootErrorBoundary extends Component<
   { children: ReactNode },
@@ -19,11 +27,20 @@ class GameRootErrorBoundary extends Component<
 > {
   constructor(props: { children: ReactNode }) {
     super(props);
-    this.state = { hasError: false, message: "" };
+    this.state = { hasError: false, message: "", stack: "" };
   }
   static getDerivedStateFromError(err: unknown): EBState {
-    console.error("[GameRootErrorBoundary] caught:", err);
-    return { hasError: true, message: String(err).slice(0, 200) };
+    return {
+      hasError: true,
+      message: err instanceof Error ? err.message : String(err),
+      stack: err instanceof Error ? (err.stack ?? "") : "",
+    };
+  }
+  override componentDidCatch(
+    error: Error,
+    errorInfo: { componentStack: string },
+  ) {
+    console.error("[GameRootErrorBoundary]", error, errorInfo);
   }
   override render() {
     if (this.state.hasError) {
@@ -32,52 +49,63 @@ class GameRootErrorBoundary extends Component<
           style={{
             position: "fixed",
             inset: 0,
-            background: "#000810",
-            display: "flex",
-            flexDirection: "column",
-            alignItems: "center",
-            justifyContent: "center",
-            fontFamily: "monospace",
-            color: "rgba(0,200,255,0.7)",
             zIndex: 99999,
+            background: "#0a0a0a",
+            padding: "2rem",
+            overflow: "auto",
+            fontFamily: "monospace",
           }}
         >
           <div
             style={{
-              fontSize: "clamp(10px,1.5vw,14px)",
+              color: "rgba(255,255,255,0.25)",
+              fontSize: "0.7rem",
               letterSpacing: "0.2em",
-              marginBottom: 12,
+              marginBottom: "1.5rem",
             }}
           >
-            A.E.G.I.S. — SYSTEM FAULT
+            [ A.E.G.I.S. — TACTICAL STAGE FAULT ]
           </div>
           <div
             style={{
-              fontSize: "clamp(8px,1vw,10px)",
-              color: "rgba(255,100,100,0.6)",
-              maxWidth: "80vw",
-              textAlign: "center",
+              color: "#ff4444",
+              fontSize: "1rem",
+              fontWeight: "bold",
+              marginBottom: "1rem",
+              wordBreak: "break-all",
             }}
           >
             {this.state.message}
           </div>
+          {this.state.stack && (
+            <pre
+              style={{
+                color: "#ff6666",
+                fontSize: "0.75rem",
+                whiteSpace: "pre-wrap",
+                wordBreak: "break-all",
+                margin: "0 0 1.5rem 0",
+                lineHeight: 1.5,
+              }}
+            >
+              {this.state.stack}
+            </pre>
+          )}
           <button
             type="button"
             onClick={() => window.location.reload()}
             style={{
-              marginTop: 24,
-              padding: "8px 24px",
               background: "transparent",
-              border: "1px solid rgba(0,180,220,0.4)",
-              borderRadius: 4,
-              color: "rgba(0,200,255,0.8)",
+              border: "1px solid #ff4444",
+              color: "#ff4444",
               fontFamily: "monospace",
-              fontSize: "clamp(9px,1.1vw,11px)",
-              letterSpacing: "0.18em",
+              fontSize: "0.85rem",
+              letterSpacing: "0.15em",
+              padding: "8px 20px",
               cursor: "pointer",
             }}
           >
-            REBOOT SYSTEM
+            RELOAD
           </button>
         </div>
       );
@@ -86,31 +114,6 @@ class GameRootErrorBoundary extends Component<
   }
 }
 
-// ─── Boot screen ──────────────────────────────────────────────────────────────
-function BootScreen() {
-  return (
-    <div
-      style={{
-        position: "fixed",
-        inset: 0,
-        background: "#000008",
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        fontFamily: "monospace",
-        fontSize: "clamp(8px,1.1vw,11px)",
-        letterSpacing: "0.25em",
-        color: "rgba(0,180,220,0.35)",
-        zIndex: 99998,
-        pointerEvents: "none",
-      }}
-    >
-      INITIALIZING
-    </div>
-  );
-}
-
-// ─── Debug mode badge ─────────────────────────────────────────────────────────
 function GameModeDebug({ mode }: { mode: string }) {
   if (typeof localStorage === "undefined") return null;
   if (localStorage.getItem("debug_gamemode") !== "1") return null;
@@ -136,24 +139,44 @@ function GameModeDebug({ mode }: { mode: string }) {
   );
 }
 
-// ─── App ──────────────────────────────────────────────────────────────────────
 export default function App() {
   const introPlaying = useIntroStore((s) => s.introPlaying);
   const introComplete = useIntroStore((s) => s.introComplete);
   const initIntroGating = useIntroStore((s) => s.initIntroGating);
   const mode = useGameState((s) => s.mode);
+  const phase = useBootStore((s) => s.phase);
+  const bootStarted = useRef(false);
   const initRef = useRef(false);
-  const [storeReady, setStoreReady] = useState(false);
 
+  // ── Boot trace — logs every render with current mode ─────────────────────
+  bootTrace(`App render — mode: ${mode}`);
+  console.log(
+    `[GameState] App render — mode: ${mode} | introPlaying: ${introPlaying} | introComplete: ${introComplete}`,
+  );
+
+  // ── [FLOW] Log every mode transition ────────────────────────────────────────
+  useEffect(() => {
+    console.log("[FLOW] mode changed to:", mode);
+  }, [mode]);
+
+  // ── App mounted — init stores ────────────────────────────────────────────
+  useEffect(() => {
+    bootTrace("App mounted");
+  }, []);
+
+  // ── Deterministic boot sequence — runs once ───────────────────────────────
+  useEffect(() => {
+    if (bootStarted.current) return;
+    bootStarted.current = true;
+    runBootSequence(useBootStore.getState());
+  }, []);
+
+  // ── One-time init: intro gating + safety fallback ─────────────────────────
   useEffect(() => {
     if (initRef.current) return;
     initRef.current = true;
-
     console.log("[App] Boot — initialising intro gating");
     initIntroGating();
-    setStoreReady(true);
-
-    // Safety net: if after 600ms neither flag is set, force to game
     setTimeout(() => {
       const state = useIntroStore.getState();
       if (!state.introPlaying && !state.introComplete) {
@@ -163,26 +186,28 @@ export default function App() {
     }, 600);
   }, [initIntroGating]);
 
-  if (!storeReady) return <BootScreen />;
+  // ── NEVER render null — boot screen gates the app ────────────────────────
+  if (phase !== "ready") return <BootLoadingScreen />;
 
   return (
     <>
       <style>{`
-        html, body {
-          margin: 0;
-          padding: 0;
-          overflow: hidden;
-          width: 100%;
-          height: 100%;
-          background: #000008;
-          overscroll-behavior: none;
-          touch-action: none;
-        }
-        #root {
-          width: 100%;
-          height: 100%;
-        }
+        html, body { margin: 0; padding: 0; overflow: hidden; width: 100%; height: 100%; background: #000008; overscroll-behavior: none; touch-action: none; }
+        #root { width: 100%; height: 100%; }
       `}</style>
+
+      <div
+        id="fade-overlay"
+        style={{
+          position: "fixed",
+          inset: 0,
+          background: "black",
+          opacity: 0,
+          transition: "opacity 0.9s ease",
+          pointerEvents: "none",
+          zIndex: 9999,
+        }}
+      />
 
       <div
         style={{
@@ -194,13 +219,11 @@ export default function App() {
           position: "relative",
         }}
       >
-        {/* Existing CinematicIntro gate — preserved unchanged */}
         {introPlaying && <CinematicIntro />}
 
-        {/* Mode-based routing — only active when legacy intro is NOT playing */}
         {!introPlaying && (
           <>
-            {/* MENU */}
+            {/* ── MENU MODE ─────────────────────────────────────────────── */}
             {mode === "menu" && (
               <div
                 style={{
@@ -211,10 +234,7 @@ export default function App() {
                   overflow: "hidden",
                 }}
               >
-                {/* Cinematic background: video once → static image */}
                 <MenuBackground />
-
-                {/* Dark overlay so title / button stay readable over the video */}
                 <div
                   style={{
                     position: "absolute",
@@ -224,70 +244,174 @@ export default function App() {
                     zIndex: 2,
                   }}
                 />
-
-                {/* FRONTIER title */}
                 <div
                   style={{
                     position: "absolute",
-                    top: "30%",
-                    left: "50%",
-                    transform: "translateX(-50%)",
-                    fontFamily: "monospace",
-                    color: "rgba(0,200,255,0.85)",
-                    letterSpacing: "0.5em",
-                    fontSize: "clamp(18px,3vw,36px)",
-                    whiteSpace: "nowrap",
+                    inset: 0,
+                    display: "flex",
+                    flexDirection: "column",
+                    alignItems: "center",
+                    justifyContent: "center",
                     pointerEvents: "none",
-                    zIndex: 3,
-                    textShadow: "0 0 24px rgba(0,200,255,0.4)",
+                    zIndex: 10,
                   }}
                 >
-                  FRONTIER
-                </div>
-                <div
-                  style={{
-                    position: "absolute",
-                    top: "calc(30% + 50px)",
-                    left: "50%",
-                    transform: "translateX(-50%)",
-                    fontFamily: "monospace",
-                    color: "rgba(0,150,200,0.5)",
-                    letterSpacing: "0.35em",
-                    fontSize: "clamp(9px,1.1vw,13px)",
-                    whiteSpace: "nowrap",
-                    pointerEvents: "none",
-                    zIndex: 3,
-                  }}
-                >
-                  LOST IN SPACE
-                </div>
-
-                {/* START CAMPAIGN sits above the overlay */}
-                <div style={{ position: "relative", zIndex: 4 }}>
-                  <StartCampaignButton />
+                  <div
+                    style={{
+                      fontFamily: "monospace",
+                      color: "rgba(220,240,255,0.92)",
+                      letterSpacing: "0.55em",
+                      fontSize: "clamp(22px, 4.5vw, 56px)",
+                      fontWeight: 700,
+                      whiteSpace: "nowrap",
+                      textShadow:
+                        "0 0 32px rgba(0,200,255,0.45), 0 2px 4px rgba(0,0,0,0.8)",
+                      lineHeight: 1,
+                    }}
+                  >
+                    FRONTIER
+                  </div>
+                  <div
+                    style={{
+                      marginTop: "10px",
+                      fontFamily: "monospace",
+                      color: "rgba(80,190,120,0.72)",
+                      letterSpacing: "0.38em",
+                      fontSize: "clamp(9px, 1.4vw, 16px)",
+                      whiteSpace: "nowrap",
+                      textShadow: "0 0 12px rgba(60,200,100,0.25)",
+                      lineHeight: 1,
+                    }}
+                  >
+                    LOST IN SPACE
+                  </div>
+                  <div style={{ pointerEvents: "auto" }}>
+                    <StartCampaignButton />
+                  </div>
                 </div>
               </div>
             )}
 
-            {/* INTRO — narrative phase sequence */}
-            {mode === "intro" && <IntroSequence />}
-
-            {/* GAME — full tactical stage */}
-            {mode === "game" && (
+            {/* ── INTRO / GAME MODE — TacticalStage always mounts here ────── */}
+            {(mode === "intro" || mode === "game") && (
               <GameRootErrorBoundary>
                 <TacticalStage />
               </GameRootErrorBoundary>
             )}
 
-            {introComplete && mode === "game" && null}
+            {/* IntroSequence overlays TacticalStage during intro mode */}
+            {mode === "intro" && <IntroSequence />}
+
+            {/* Suppress "unused" warning — game mode renders TacticalStage only */}
+            {introComplete && mode === "game" ? null : null}
+
+            {/* ── CATCH-ALL — unexpected / undefined mode ────────────────── */}
+            {mode !== "menu" && mode !== "intro" && mode !== "game" && (
+              <UnmatchedModeFallback mode={mode} />
+            )}
           </>
         )}
 
-        {/* Cockpit atmosphere — always on top of game content, never blocks input */}
         <CockpitOverlay />
       </div>
 
       <GameModeDebug mode={mode} />
+      {/* Game state debug overlay — activate: localStorage.setItem('debug_gamestate','1') */}
+      <GameStateDebugOverlay />
+      <DiagnosticHUD />
+      {/* Physics engine debug — activate: localStorage.setItem('debug_physics','1') */}
+      <SpacePhysicsDebug />
     </>
+  );
+}
+
+/** Catch-all fallback for unexpected/undefined game mode */
+function UnmatchedModeFallback({ mode }: { mode: string }) {
+  const setMode = useGameState((s) => s.setMode);
+
+  console.warn("[GameState] Unmatched mode — rendering fallback", { mode });
+
+  return (
+    <div
+      data-ocid="app.fallback.panel"
+      style={{
+        position: "fixed",
+        inset: 0,
+        background: "rgba(0,4,12,0.97)",
+        display: "flex",
+        flexDirection: "column",
+        alignItems: "center",
+        justifyContent: "center",
+        gap: 20,
+        fontFamily: "monospace",
+        zIndex: 500,
+      }}
+    >
+      <div
+        style={{
+          fontSize: "0.65rem",
+          letterSpacing: "0.3em",
+          color: "rgba(255,100,100,0.5)",
+          marginBottom: 4,
+        }}
+      >
+        A.E.G.I.S. — STATE UNDEFINED
+      </div>
+      <div
+        style={{
+          fontSize: "0.75rem",
+          letterSpacing: "0.2em",
+          color: "rgba(200,220,255,0.6)",
+        }}
+      >
+        UNKNOWN MODE: {mode || "(empty)"}
+      </div>
+      <div
+        style={{
+          display: "flex",
+          gap: 12,
+          marginTop: 12,
+          flexWrap: "wrap",
+          justifyContent: "center",
+        }}
+      >
+        <button
+          type="button"
+          data-ocid="app.fallback.menu_button"
+          onClick={() => setMode("menu")}
+          style={{
+            padding: "10px 24px",
+            background: "rgba(0,20,40,0.8)",
+            border: "1px solid rgba(0,200,255,0.4)",
+            color: "rgba(0,210,255,0.85)",
+            fontFamily: "monospace",
+            fontSize: "0.75rem",
+            letterSpacing: "0.18em",
+            cursor: "pointer",
+            borderRadius: 3,
+          }}
+        >
+          RETURN TO MENU
+        </button>
+        <button
+          type="button"
+          data-ocid="app.fallback.game_button"
+          onClick={() => setMode("game")}
+          style={{
+            padding: "10px 24px",
+            background: "rgba(0,20,10,0.8)",
+            border: "1px solid rgba(0,255,136,0.35)",
+            color: "rgba(0,240,120,0.85)",
+            fontFamily: "monospace",
+            fontSize: "0.75rem",
+            letterSpacing: "0.18em",
+            cursor: "pointer",
+            borderRadius: 3,
+          }}
+        >
+          ENTER COCKPIT
+        </button>
+      </div>
+    </div>
   );
 }
