@@ -450,9 +450,15 @@ export default function TacticalStage() {
     const t = setTimeout(() => {
       if (promptDecidedRef.current) return;
       promptDecidedRef.current = true;
-      if (pendingTutorialStart) consumeTutorialStart();
-      console.log("[Tutorial] Showing tutorial prompt to player");
-      setShowTutorialPrompt(true);
+      if (pendingTutorialStart) {
+        consumeTutorialStart();
+        // Auto-start tutorial when coming from campaign intro (no prompt needed)
+        console.log("[Tutorial] pendingTutorialStart → auto-starting tutorial");
+        useTutorialStore.getState().startTutorial();
+      } else {
+        console.log("[Tutorial] Showing tutorial prompt to player");
+        setShowTutorialPrompt(true);
+      }
     }, 1200);
     return () => clearTimeout(t);
   }, [
