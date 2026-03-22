@@ -109,7 +109,7 @@ EOF
 # Install Motoko base library
 RUN <<EOF
 set -e
-BASE_LIB_VERSION=SKIP
+BASE_LIB_VERSION=1.2.0
 BASE_LIB_INSTALL_DIR="$HOME/.motoko/base/$BASE_LIB_VERSION"
 mkdir -p "$BASE_LIB_INSTALL_DIR"
 BASE_LIB_URL="https://github.com/caffeinelabs/motoko-base/archive/refs/tags/moc-${BASE_LIB_VERSION}.tar.gz"
@@ -120,7 +120,7 @@ EOF
 # Set Motoko environment variables for deploy.sh and other scripts
 ENV MOC_PATH="/home/ubuntu/.motoko/moc/1.2.0/bin/moc"
 ENV MOTOKO_CORE="/home/ubuntu/.motoko/core/moc-1.2.0"
-ENV MOTOKO_BASE="/home/ubuntu/.motoko/base/SKIP"
+ENV MOTOKO_BASE="/home/ubuntu/.motoko/base/1.2.0"
 
 WORKDIR /workdir
 
