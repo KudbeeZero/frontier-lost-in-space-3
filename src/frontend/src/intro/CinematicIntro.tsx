@@ -3,11 +3,20 @@
  *
  * Full-screen cinematic intro. Premium intro_start event uses ElevenLabs;
  * subsequent dialogue lines use local browser TTS.
+ *
+ * Enhancements (additive, Caffeine-safe):
+ *   • NebulaBackdrop  — R3F Canvas with HDR skybox (falls back to CSS when
+ *                       frontend/public/assets/nebula.hdr is absent)
+ *   • AmbientSpaceMusic — loopable ambient track with fade-in / fade-out
+ *                         (falls back silently when MP3 is absent)
+ *   • Story text overlay — "Lost in the Nebula Frontier…" title card
  */
 import { useEffect, useRef, useState } from "react";
 import { speak, stopSpeech } from "../audio/aegisVoice";
 import { speakEleven, stopAllVoice } from "../systems/ElevenVoice";
 import { useIntroStore } from "./useIntroStore";
+import AmbientSpaceMusic from "./AmbientSpaceMusic";
+import NebulaBackdrop from "./NebulaBackdrop";
 
 const DIALOGUE_LINES = [
   { at: 14.5, text: "Commander\u2026 systems initializing." },
@@ -146,6 +155,15 @@ export default function CinematicIntro() {
         userSelect: "none",
       }}
     >
+      {/* Nebula HDR backdrop — renders behind all other layers (zIndex 0).
+          Falls back silently to the CSS #000005 background when the HDR
+          file is absent. Place nebula.hdr in public/assets/ to activate. */}
+      <NebulaBackdrop />
+
+      {/* Ambient space music — mounts immediately, fades in over 4 s.
+          Falls back silently when the MP3 asset is absent. */}
+      <AmbientSpaceMusic />
+
       {/* Stars */}
       <div
         style={{
@@ -322,6 +340,60 @@ export default function CinematicIntro() {
           }}
         >
           A.E.G.I.S. — TACTICAL COMMAND INTERFACE
+        </div>
+      </div>
+
+      {/* Story title card — fades in early, before HUD power-on */}
+      <div
+        style={{
+          position: "absolute",
+          top: "50%",
+          left: 0,
+          right: 0,
+          transform: "translateY(-50%)",
+          display: "flex",
+          flexDirection: "column",
+          alignItems: "center",
+          gap: 10,
+          opacity: Math.min(1, Math.max(0, (elapsed - 3) / 3)) *
+            Math.max(0, 1 - (elapsed - 11) / 2),
+          transition: "opacity 0.6s ease",
+          pointerEvents: "none",
+          zIndex: 1,
+        }}
+      >
+        <div
+          style={{
+            fontFamily: "monospace",
+            fontSize: "clamp(13px, 2.2vw, 22px)",
+            letterSpacing: "0.45em",
+            color: "rgba(180,210,255,0.85)",
+            textShadow:
+              "0 0 30px rgba(80,160,255,0.5), 0 0 60px rgba(80,160,255,0.2)",
+            textAlign: "center",
+            padding: "0 clamp(12px, 4vw, 48px)",
+          }}
+        >
+          LOST IN THE NEBULA FRONTIER
+        </div>
+        <div
+          style={{
+            width: "clamp(80px, 20vw, 200px)",
+            height: 1,
+            background:
+              "linear-gradient(90deg, transparent, rgba(100,180,255,0.4), transparent)",
+          }}
+        />
+        <div
+          style={{
+            fontFamily: "monospace",
+            fontSize: "clamp(8px, 1.1vw, 11px)",
+            letterSpacing: "0.3em",
+            color: "rgba(100,160,220,0.55)",
+            textAlign: "center",
+          }}
+        >
+          SECTOR 7 — DEEP SPACE
         </div>
       </div>
 
