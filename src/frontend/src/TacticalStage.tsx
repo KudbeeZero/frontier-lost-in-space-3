@@ -1,13 +1,24 @@
 /**
  * TacticalStage — Main game view.
  *
- * V17.1: Landscape layout, pointer-events audit, InputLayerDebug.
- * V19:   InteractionDebugShell, runInteractionAssertions on mount.
- * V20:   Raycast + rendering fixes.
- * V20 (Nav Mode): NavigationModeHUD, globalNavMode initialization.
- * V27 (Narrative): NarrativeEventPanel + NarrativeController.
- * V31 (Tutorial Gate): TutorialBootstrap replaced with TutorialPromptModal.
- *   Tutorial never auto-starts. Player is always asked first.
+ * V48 — FULL-SCREEN GLOBE + OVERLAY CONTROLS (mobile game pattern)
+ *
+ * Layout inspired by top mobile games (PUBG Mobile, COD Mobile, Fortnite):
+ * - Globe fills 100% of the screen — no side panel stealing space
+ * - All controls are semi-transparent overlays anchored to screen edges
+ * - Fire/weapon console: bottom-right overlay
+ * - CEP panel: left edge (existing, already absolute)
+ * - Velocity/Radar: bottom-left + top-right (existing, already absolute)
+ * - NavigationModeHUD: top-center (existing)
+ *
+ * CLICK FIX (V48):
+ * - GameBootstrap forces tacticalLock on init so targeting is always active
+ * - EarthGlobe click handler auto-transitions orbitObservation → tacticalLock
+ *   BEFORE the gate check (previously the auto-transition was after the early
+ *   return, so it never fired)
+ *
+ * SAFE AREA: padding-right uses env(safe-area-inset-right) for iPhone notches.
+ * SCALING: controls scale via clamp() — no fixed px sizes that break on mobile.
  */
 import { Canvas, useFrame, useThree } from "@react-three/fiber";
 import { useEffect, useRef, useState } from "react";
@@ -20,7 +31,6 @@ import { usePlayerStore } from "./combat/usePlayerStore";
 import { useWeaponsStore } from "./combat/useWeapons";
 import { HostileContactCinematic } from "./components/cinematics/HostileContactCinematic";
 import InteractionDebugShell from "./components/debug/InteractionDebugShell";
-import BottomCommandNav from "./components/game/BottomCommandNav";
 import CEPStatusPanel from "./components/game/CEPStatusPanel";
 import CameraController from "./components/game/CameraController";
 import CockpitFrame from "./components/game/CockpitFrame";
@@ -31,7 +41,6 @@ import { GlobeErrorBoundary } from "./components/game/GlobeErrorBoundary";
 import { HudErrorBoundary } from "./components/game/HudErrorBoundary";
 import IncomingFireLayer from "./components/game/IncomingFireLayer";
 import InputLayerDebug from "./components/game/InputLayerDebug";
-import MobileJoystick from "./components/game/MobileJoystick";
 import NarrativeEventPanel from "./components/game/NarrativeEventPanel";
 import NavigationModeHUD from "./components/game/NavigationModeHUD";
 import PlayerShieldHUD from "./components/game/PlayerShieldHUD";
@@ -39,7 +48,6 @@ import PortraitCommandDrawer from "./components/game/PortraitCommandDrawer";
 import PortraitStatusBar from "./components/game/PortraitStatusBar";
 import QaPanel from "./components/game/QaPanel";
 import RadarSystem from "./components/game/RadarSystem";
-import RightDragZone from "./components/game/RightDragZone";
 import ShipMotionLayer from "./components/game/ShipMotionLayer";
 import SpaceBackground from "./components/game/SpaceBackground";
 import TacticalLogPanel from "./components/game/TacticalLogPanel";
@@ -100,46 +108,54 @@ function GameBootstrap() {
     add({ type: "system", message: "ALL SYSTEMS NOMINAL" });
     add({ type: "system", message: "ORBITAL THREATS DETECTED — ENGAGE" });
     useAlertsStore.getState().seedDegradationAlerts();
-    console.log(
-      `[NAV-MODE] Session initialized — mode: ${globalNavMode.currentMode}`,
+
+    // V48 FIX: Force tacticalLock on game start so globe targeting is always active.
+    // orbitObservation has targetingEnabled:false which was blocking all globe taps.
+    globalNavMode.forceMode(
+      "tacticalLock",
+      "game init — targeting always active",
     );
+    console.log("[NAV-MODE] Session initialized — forced to tacticalLock");
   }, []);
   return null;
 }
 
-/**
- * NarrativeController — drives phase-1 narrative events based on
- * elapsed time and CEP level escalation.
- */
 function NarrativeController() {
   const cepLevel = useCEPStore((s) => s.level);
+  const tutorialActive = useTutorialStore((s) => s.tutorialActive);
+  const tutorialComplete = useTutorialStore((s) => s.tutorialComplete);
+  const tutorialSkipped = useTutorialStore((s) => s.tutorialSkipped);
+  const tutorialDone = tutorialComplete || tutorialSkipped;
   const firedFirstContact = useRef(false);
   const firedCepWarning = useRef(false);
   const firedRevelation = useRef(false);
 
   useEffect(() => {
+    if (tutorialActive) return;
+    if (firedFirstContact.current) return;
+    const delay = tutorialDone ? 1500 : 5000;
     const t = setTimeout(() => {
       if (firedFirstContact.current) return;
+      if (useTutorialStore.getState().tutorialActive) return;
       firedFirstContact.current = true;
-      console.log("[NARRATIVE] Auto-triggering phase1_first_contact");
       useNarrativeStore.getState().triggerEvent("phase1_first_contact");
-    }, 5000);
+    }, delay);
     return () => clearTimeout(t);
-  }, []);
+  }, [tutorialActive, tutorialDone]);
 
   useEffect(() => {
-    if (cepLevel >= 2 && !firedCepWarning.current) {
+    if (cepLevel >= 2 && !firedCepWarning.current && !tutorialActive) {
       firedCepWarning.current = true;
       useNarrativeStore.getState().triggerEvent("phase1_cep_warning");
     }
-  }, [cepLevel]);
+  }, [cepLevel, tutorialActive]);
 
   useEffect(() => {
-    if (cepLevel >= 4 && !firedRevelation.current) {
+    if (cepLevel >= 4 && !firedRevelation.current && !tutorialActive) {
       firedRevelation.current = true;
       useNarrativeStore.getState().triggerEvent("phase1_aegis_revelation");
     }
-  }, [cepLevel]);
+  }, [cepLevel, tutorialActive]);
 
   return null;
 }
@@ -154,7 +170,7 @@ function SceneBootConfirm({ onConfirm }: { onConfirm: () => void }) {
   useFrame(() => {
     if (confirmed.current) return;
     confirmed.current = true;
-    console.log("[Canvas] First frame rendered \u2714");
+    console.log("[Canvas] First frame rendered ✔");
     onConfirm();
   });
   return null;
@@ -215,7 +231,7 @@ function CoreLoopDebug() {
   const allReady = weapons.every((w) => w.status === "READY");
   const dot = (ok: boolean, label: string) => (
     <span key={label} style={{ color: ok ? "#0f8" : "#f80", marginRight: 6 }}>
-      {ok ? "\u25cf" : "\u25cb"} {label}
+      {ok ? "●" : "○"} {label}
     </span>
   );
   return (
@@ -248,13 +264,7 @@ function CoreLoopDebug() {
   );
 }
 
-function DiagnosticsTrigger({
-  onOpen,
-  isLandscape,
-}: {
-  onOpen: () => void;
-  isLandscape: boolean;
-}) {
+function DiagnosticsTrigger({ onOpen }: { onOpen: () => void }) {
   return (
     <button
       type="button"
@@ -262,9 +272,8 @@ function DiagnosticsTrigger({
       title="Diagnostics"
       style={{
         position: "fixed",
-        bottom: isLandscape ? 80 : 72,
-        left: isLandscape ? "auto" : 8,
-        right: isLandscape ? 8 : "auto",
+        bottom: 80,
+        right: 8,
         zIndex: 9997,
         width: 28,
         height: 28,
@@ -281,156 +290,143 @@ function DiagnosticsTrigger({
         WebkitTapHighlightColor: "transparent",
       }}
     >
-      \u25c8
+      ◈
     </button>
   );
 }
 
-function GlobeViewport({
-  viewportRef,
-  sceneReady,
-  handleSceneReady,
-  isLandscape,
-}: {
-  viewportRef: React.RefObject<HTMLDivElement | null>;
-  sceneReady: boolean;
-  handleSceneReady: () => void;
-  isLandscape: boolean;
-}) {
+/** Portrait-only gate */
+function RotateToPlayGate() {
   return (
     <div
-      ref={viewportRef}
-      data-layer="viewport"
       style={{
-        flex: 1,
-        position: "relative",
-        overflow: "hidden",
-        minHeight: isLandscape ? "unset" : "40vh",
-        backgroundImage:
-          "url('/assets/generated/space-background-deep.dim_1920x1080.jpg')",
-        backgroundSize: "cover",
-        backgroundPosition: "center",
-        backgroundColor: "#000015",
+        position: "fixed",
+        inset: 0,
+        zIndex: 9999,
+        background: "#000008",
+        display: "flex",
+        flexDirection: "column",
+        alignItems: "center",
+        justifyContent: "center",
+        gap: 24,
       }}
     >
-      <BootFadeOverlay visible={!sceneReady} />
-      <HostileContactCinematic viewportRef={viewportRef} />
-
-      <HudErrorBoundary name="StatusBar">
-        <PortraitStatusBar />
-      </HudErrorBoundary>
-
-      <GlobeErrorBoundary>
-        <Canvas
-          data-layer="globe-canvas"
-          style={{ position: "absolute", inset: 0, zIndex: 1 }}
-          camera={{ fov: 55, near: 0.1, far: 200, position: [0, 0.9, 5] }}
-          gl={{ antialias: true, alpha: true }}
-          dpr={DPR}
-          onCreated={(state) => {
-            console.log("[Canvas] WebGL context created \u2714");
-            console.log(
-              "[Canvas] Size:",
-              state.size.width,
-              "x",
-              state.size.height,
-            );
+      <span
+        style={{
+          fontSize: 64,
+          color: "rgba(0,200,255,0.7)",
+          lineHeight: 1,
+          userSelect: "none",
+          display: "inline-block",
+          animation: "rotatePrompt 2.4s ease-in-out infinite",
+        }}
+      >
+        &#x21BB;
+      </span>
+      <div
+        style={{
+          display: "flex",
+          flexDirection: "column",
+          alignItems: "center",
+          gap: 10,
+        }}
+      >
+        <span
+          style={{
+            fontFamily: "monospace",
+            fontSize: 18,
+            letterSpacing: "0.3em",
+            color: "rgba(0,200,255,0.85)",
+            userSelect: "none",
           }}
         >
-          <CameraController />
-          <SpaceBackground />
-          <EarthGlobe />
-          <ThreatManager />
-          <EnemyTargetsLayer />
-          <IncomingFireLayer />
-          <CombatEffectsLayer />
-          <SceneBootConfirm onConfirm={handleSceneReady} />
-        </Canvas>
-      </GlobeErrorBoundary>
-
-      <div
-        data-tutorial-target="globe-area"
-        style={{
-          position: "absolute",
-          top: "50%",
-          left: "50%",
-          transform: "translate(-50%, -50%)",
-          width: "min(52vw, 52vh)",
-          height: "min(52vw, 52vh)",
-          borderRadius: "50%",
-          zIndex: 2,
-          pointerEvents: "none",
-        }}
-      />
-
-      <img
-        src="/assets/generated/cockpit-hud-overlay-transparent.dim_1920x1080.png"
-        alt=""
-        aria-hidden
-        data-layer="hud-decoration"
-        style={{
-          position: "absolute",
-          inset: 0,
-          width: "100%",
-          height: "100%",
-          objectFit: "cover",
-          mixBlendMode: "screen",
-          opacity: 0.08,
-          pointerEvents: "none",
-          zIndex: 3,
-        }}
-      />
-
-      <NavigationModeHUD />
-
-      <ShipMotionLayer
-        factor={0.55}
-        zIndex={15}
-        leanMult={1}
-        style={{ pointerEvents: "none" }}
-      >
-        <CockpitFrame />
-        <UpperCanopy />
-      </ShipMotionLayer>
-
-      {/* CEP status panel — left edge, mid-screen */}
-      <CEPStatusPanel />
-
-      <HudErrorBoundary name="ShieldHUD">
-        <PlayerShieldHUD />
-      </HudErrorBoundary>
-
-      <div
-        style={{
-          position: "absolute",
-          bottom: "clamp(12px, 3vh, 28px)",
-          left: "clamp(10px, 2.5vw, 20px)",
-          zIndex: 22,
-          pointerEvents: "none",
-        }}
-      >
-        <VelocityIndicator />
+          ROTATE TO PLAY
+        </span>
+        <span
+          style={{
+            fontFamily: "monospace",
+            fontSize: 11,
+            color: "rgba(0,200,255,0.4)",
+            letterSpacing: "0.15em",
+            userSelect: "none",
+          }}
+        >
+          Frontier requires landscape orientation
+        </span>
       </div>
-
-      <HudErrorBoundary name="Radar">
-        <RadarSystem />
-      </HudErrorBoundary>
-
-      <RightDragZone widthPct={isLandscape ? 50 : 58} />
-
-      <PlayerHitFlash />
+      <style>{`
+        @keyframes rotatePrompt {
+          0%   { transform: rotate(0deg);   opacity: 0.7; }
+          40%  { transform: rotate(90deg);  opacity: 1;   }
+          60%  { transform: rotate(90deg);  opacity: 1;   }
+          100% { transform: rotate(90deg);  opacity: 0.7; }
+        }
+      `}</style>
     </div>
   );
 }
 
-export default function TacticalStage() {
+/**
+ * OverlayControlPanel — bottom-right weapon + fire controls.
+ *
+ * Inspired by top mobile games:
+ * - Anchored to bottom-right with safe-area padding
+ * - Semi-transparent so the globe shows through
+ * - Scale via clamp() for consistent size across devices
+ * - pointer-events: auto only on interactive children
+ */
+function OverlayControlPanel() {
+  return (
+    <div
+      style={{
+        position: "absolute",
+        bottom: 0,
+        right: 0,
+        zIndex: 40,
+        // Safe area for iPhone notch / home indicator
+        paddingBottom: "max(8px, env(safe-area-inset-bottom))",
+        paddingRight: "max(8px, env(safe-area-inset-right))",
+        // Scale the whole panel proportionally — clamp prevents too-small on phone
+        width: "clamp(240px, 30vw, 360px)",
+        // Subtle dark gradient so controls are readable but globe shows through
+        background:
+          "linear-gradient(135deg, rgba(0,4,12,0.0) 0%, rgba(0,4,12,0.55) 40%, rgba(0,4,12,0.75) 100%)",
+        borderTop: "1px solid rgba(0,200,255,0.08)",
+        borderLeft: "1px solid rgba(0,200,255,0.08)",
+        borderTopLeftRadius: 12,
+        backdropFilter: "blur(6px)",
+        WebkitBackdropFilter: "blur(6px)",
+        display: "flex",
+        flexDirection: "column",
+        gap: 0,
+        // Hologram + ghost layers are decorative — keep pointer-events off on wrapper
+        // WeaponConsole handles its own pointer-events internally
+      }}
+    >
+      {/* Hologram + ghost — decorative, no pointer events */}
+      <div style={{ pointerEvents: "none", flexShrink: 0 }}>
+        <HudErrorBoundary name="Hologram">
+          <WeaponHologramLayer />
+        </HudErrorBoundary>
+      </div>
+      <div style={{ pointerEvents: "none", flexShrink: 0 }}>
+        <WeaponGhostLayer />
+      </div>
+      {/* WeaponConsole — fully interactive */}
+      <div style={{ flexShrink: 0 }}>
+        <WeaponConsole />
+      </div>
+    </div>
+  );
+}
+
+/** Inner component — only renders when landscape is confirmed */
+function TacticalStageInner() {
   const [diagOpen, setDiagOpen] = useState(false);
   const [sceneReady, setSceneReady] = useState(false);
   const sceneReadyRef = useRef(false);
   const viewportRef = useRef<HTMLDivElement>(null);
-  const isLandscape = useIsLandscape();
 
-  // Tutorial prompt gate — show once per session unless already decided
   const tutorialComplete = useTutorialStore((s) => s.tutorialComplete);
   const tutorialSkipped = useTutorialStore((s) => s.tutorialSkipped);
   const pendingTutorialStart = useIntroStore((s) => s.pendingTutorialStart);
@@ -438,25 +434,19 @@ export default function TacticalStage() {
   const [showTutorialPrompt, setShowTutorialPrompt] = useState(false);
   const promptDecidedRef = useRef(false);
 
-  // Decide whether to show the prompt on mount (after a short settling delay)
   useEffect(() => {
     if (promptDecidedRef.current) return;
     if (tutorialComplete || tutorialSkipped) {
-      // Player has already made a permanent decision — consume any pending flag
       if (pendingTutorialStart) consumeTutorialStart();
       return;
     }
-    // Short delay so the cockpit can render first before overlaying the prompt
     const t = setTimeout(() => {
       if (promptDecidedRef.current) return;
       promptDecidedRef.current = true;
       if (pendingTutorialStart) {
         consumeTutorialStart();
-        // Auto-start tutorial when coming from campaign intro (no prompt needed)
-        console.log("[Tutorial] pendingTutorialStart → auto-starting tutorial");
         useTutorialStore.getState().startTutorial();
       } else {
-        console.log("[Tutorial] Showing tutorial prompt to player");
         setShowTutorialPrompt(true);
       }
     }, 1200);
@@ -489,19 +479,11 @@ export default function TacticalStage() {
       const fails = results.filter((r) => !r.pass).length;
       const warns = results.filter((r) => r.pass && r.warn).length;
       for (const result of results) {
-        if (!result.pass) {
-          console.error(
-            `[TRIPWIRE] FAIL \u2014 ${result.name}: ${result.reason} (source: ${result.source})`,
-          );
-        } else if (result.warn) {
-          console.warn(
-            `[TRIPWIRE] WARN \u2014 ${result.name}: ${result.reason} (source: ${result.source})`,
-          );
-        } else {
-          console.log(
-            `[TRIPWIRE] PASS \u2014 ${result.name}: ${result.reason}`,
-          );
-        }
+        if (!result.pass)
+          console.error(`[TRIPWIRE] FAIL — ${result.name}: ${result.reason}`);
+        else if (result.warn)
+          console.warn(`[TRIPWIRE] WARN — ${result.name}: ${result.reason}`);
+        else console.log(`[TRIPWIRE] PASS — ${result.name}: ${result.reason}`);
       }
       console.log(
         `[TRIPWIRE] Summary: ${results.length - fails - warns} PASS / ${warns} WARN / ${fails} FAIL`,
@@ -526,106 +508,173 @@ export default function TacticalStage() {
   return (
     <div
       style={{
-        width: "100%",
-        height: "100dvh",
-        display: "flex",
-        flexDirection: isLandscape ? "row" : "column",
-        background: "#000008",
-        overflow: "hidden",
+        // Root container — full screen, no overflow
         position: "relative",
+        width: "100vw",
+        height: "100dvh",
+        overflow: "hidden",
+        background: "#000008",
       }}
     >
+      {/* Non-rendering game systems */}
       <GameBootstrap />
       <WeaponsTick />
       <DegradationTicker />
       <CEPSystemController />
       <NarrativeController />
       <CEPHudAlert />
+
+      {/* ── FULL-SCREEN GLOBE VIEWPORT ─────────────────────────────────── */}
+      {/*
+       * The globe fills the entire screen. All controls are overlaid on top.
+       * This matches the mobile game pattern: PUBG Mobile / COD Mobile where
+       * the game world takes 100% of screen real-estate.
+       */}
+      <div
+        ref={viewportRef}
+        data-layer="viewport"
+        style={{
+          position: "absolute",
+          inset: 0,
+          backgroundImage:
+            "url('/assets/generated/space-background-deep.dim_1920x1080.jpg')",
+          backgroundSize: "cover",
+          backgroundPosition: "center",
+          backgroundColor: "#000015",
+        }}
+      >
+        <BootFadeOverlay visible={!sceneReady} />
+        <HostileContactCinematic viewportRef={viewportRef} />
+
+        <HudErrorBoundary name="StatusBar">
+          <PortraitStatusBar />
+        </HudErrorBoundary>
+
+        {/* Globe Canvas — fills entire viewport */}
+        <GlobeErrorBoundary>
+          <Canvas
+            data-layer="globe-canvas"
+            style={{ position: "absolute", inset: 0, zIndex: 1 }}
+            camera={{ fov: 55, near: 0.1, far: 200, position: [0, 0.9, 5] }}
+            gl={{ antialias: true, alpha: true }}
+            dpr={DPR}
+            onCreated={(state) => {
+              console.log("[Canvas] WebGL context created ✔");
+              console.log(
+                "[Canvas] Size:",
+                state.size.width,
+                "x",
+                state.size.height,
+              );
+            }}
+          >
+            <CameraController />
+            <SpaceBackground />
+            <EarthGlobe />
+            <ThreatManager />
+            <EnemyTargetsLayer />
+            <IncomingFireLayer />
+            <CombatEffectsLayer />
+            <SceneBootConfirm onConfirm={handleSceneReady} />
+          </Canvas>
+        </GlobeErrorBoundary>
+
+        {/* Invisible tutorial target zone — centered on globe */}
+        <div
+          data-tutorial-target="globe-area"
+          style={{
+            position: "absolute",
+            top: "50%",
+            left: "50%",
+            transform: "translate(-50%, -50%)",
+            width: "min(70vw, 70vh)",
+            height: "min(70vw, 70vh)",
+            borderRadius: "50%",
+            zIndex: 2,
+            pointerEvents: "none",
+          }}
+        />
+
+        {/* Cockpit HUD overlay texture — very subtle scanline/vignette */}
+        <img
+          src="/assets/generated/cockpit-hud-overlay-transparent.dim_1920x1080.png"
+          alt=""
+          aria-hidden
+          data-layer="hud-decoration"
+          style={{
+            position: "absolute",
+            inset: 0,
+            width: "100%",
+            height: "100%",
+            objectFit: "cover",
+            mixBlendMode: "screen",
+            opacity: 0.06,
+            pointerEvents: "none",
+            zIndex: 3,
+          }}
+        />
+
+        {/* Navigation mode — top-center */}
+        <NavigationModeHUD />
+
+        {/* Cockpit frame overlay — decorative, pointer-events none */}
+        <ShipMotionLayer
+          factor={0.55}
+          zIndex={15}
+          leanMult={1}
+          style={{ pointerEvents: "none" }}
+        >
+          <CockpitFrame />
+          <UpperCanopy />
+        </ShipMotionLayer>
+
+        {/* CEP — left edge (existing absolute positioning preserved) */}
+        <CEPStatusPanel />
+
+        {/* Shield HUD — top area */}
+        <HudErrorBoundary name="ShieldHUD">
+          <PlayerShieldHUD />
+        </HudErrorBoundary>
+
+        {/* Velocity indicator — bottom-left */}
+        <div
+          style={{
+            position: "absolute",
+            bottom: "clamp(12px, 3vh, 28px)",
+            left: "clamp(10px, 2.5vw, 20px)",
+            zIndex: 22,
+            pointerEvents: "none",
+          }}
+        >
+          <VelocityIndicator />
+        </div>
+
+        {/* Radar — top-right (gives space for weapon console bottom-right) */}
+        <HudErrorBoundary name="Radar">
+          <RadarSystem />
+        </HudErrorBoundary>
+
+        <PlayerHitFlash />
+      </div>
+
+      {/* ── OVERLAID CONTROLS ─────────────────────────────────────────── */}
+      {/*
+       * Controls float above the globe as semi-transparent overlays.
+       * This is the standard pattern in top mobile games.
+       * pointer-events only active on interactive elements inside.
+       */}
+
+      {/* Weapon + fire console — bottom-right overlay */}
+      <OverlayControlPanel />
+
+      {/* Narrative event panel — center overlay */}
       <NarrativeEventPanel />
-      <CoreLoopDebug />
 
-      {!isLandscape && (
-        <>
-          <GlobeViewport
-            viewportRef={viewportRef}
-            sceneReady={sceneReady}
-            handleSceneReady={handleSceneReady}
-            isLandscape={false}
-          />
-          <div style={{ position: "relative", width: "100%", flexShrink: 0 }}>
-            <div style={{ pointerEvents: "none" }}>
-              <HudErrorBoundary name="Hologram">
-                <WeaponHologramLayer />
-              </HudErrorBoundary>
-            </div>
-            <div style={{ position: "relative", pointerEvents: "none" }}>
-              <WeaponGhostLayer />
-            </div>
-            <WeaponConsole />
-          </div>
-          <BottomCommandNav />
-        </>
-      )}
-
-      {isLandscape && (
-        <>
-          <div
-            style={{
-              flex: "1.15",
-              display: "flex",
-              flexDirection: "column",
-              position: "relative",
-              overflow: "hidden",
-            }}
-          >
-            <GlobeViewport
-              viewportRef={viewportRef}
-              sceneReady={sceneReady}
-              handleSceneReady={handleSceneReady}
-              isLandscape={true}
-            />
-          </div>
-          <div
-            style={{
-              flex: "0.75",
-              display: "flex",
-              flexDirection: "column",
-              background: "rgba(0,3,12,0.97)",
-              borderLeft: "1px solid rgba(0,200,255,0.12)",
-              overflow: "hidden",
-              position: "relative",
-            }}
-          >
-            <div style={{ pointerEvents: "none", flexShrink: 0 }}>
-              <HudErrorBoundary name="Hologram">
-                <WeaponHologramLayer />
-              </HudErrorBoundary>
-            </div>
-            <div
-              style={{
-                position: "relative",
-                pointerEvents: "none",
-                flexShrink: 0,
-              }}
-            >
-              <WeaponGhostLayer />
-            </div>
-            <div style={{ flexShrink: 0 }}>
-              <WeaponConsole />
-            </div>
-            <div style={{ marginTop: "auto" }}>
-              <BottomCommandNav />
-            </div>
-          </div>
-        </>
-      )}
-
-      <MobileJoystick />
+      {/* Drawer + log — existing components */}
       <PortraitCommandDrawer />
       <TacticalLogPanel />
       <TutorialOverlay />
 
-      {/* Tutorial prompt — shown once on first game entry, never auto-starts */}
       {showTutorialPrompt && (
         <TutorialPromptModal
           onClose={() => {
@@ -635,17 +684,13 @@ export default function TacticalStage() {
         />
       )}
 
-      <DiagnosticsTrigger
-        onOpen={() => setDiagOpen((v) => !v)}
-        isLandscape={isLandscape}
-      />
+      <DiagnosticsTrigger onOpen={() => setDiagOpen((v) => !v)} />
       {diagOpen && (
         <div
           style={{
             position: "fixed",
-            bottom: isLandscape ? 116 : 72,
-            left: isLandscape ? "auto" : 44,
-            right: isLandscape ? 44 : "auto",
+            bottom: 116,
+            right: 44,
             zIndex: 9998,
             width: "min(340px, 90vw)",
             maxHeight: "60vh",
@@ -686,7 +731,7 @@ export default function TacticalStage() {
                 fontSize: 12,
               }}
             >
-              \u00d7
+              ×
             </button>
           </div>
           <QaPanel />
@@ -695,6 +740,7 @@ export default function TacticalStage() {
 
       <InputLayerDebug />
       <InteractionDebugShell />
+      <CoreLoopDebug />
 
       <style>{`
         @keyframes hitPulse {
@@ -704,4 +750,10 @@ export default function TacticalStage() {
       `}</style>
     </div>
   );
+}
+
+export default function TacticalStage() {
+  const isLandscape = useIsLandscape();
+  if (!isLandscape) return <RotateToPlayGate />;
+  return <TacticalStageInner />;
 }

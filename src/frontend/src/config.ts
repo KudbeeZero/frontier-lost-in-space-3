@@ -40,17 +40,15 @@ export async function loadConfig(): Promise<Config> {
     const response = await fetch(`${baseUrl}env.json`);
     const config = (await response.json()) as JsonConfig;
     if (!backendCanisterId && config.backend_canister_id === "undefined") {
-      console.warn(
-        "CANISTER_ID_BACKEND is not set — backend actor calls will be disabled. " +
-          "Set CANISTER_ID_BACKEND for full ICP functionality.",
-      );
+      console.error("CANISTER_ID_BACKEND is not set");
+      throw new Error("CANISTER_ID_BACKEND is not set");
     }
 
     const fullConfig = {
       backend_host:
         config.backend_host === "undefined" ? undefined : config.backend_host,
       backend_canister_id: (config.backend_canister_id === "undefined"
-        ? (backendCanisterId ?? "local-dev-placeholder")
+        ? backendCanisterId
         : config.backend_canister_id) as string,
       storage_gateway_url: process.env.STORAGE_GATEWAY_URL ?? "nogateway",
       bucket_name: DEFAULT_BUCKET_NAME,
@@ -67,14 +65,12 @@ export async function loadConfig(): Promise<Config> {
     return fullConfig;
   } catch {
     if (!backendCanisterId) {
-      console.warn(
-        "CANISTER_ID_BACKEND is not set and env.json is unavailable — " +
-          "backend actor calls will be disabled. Set CANISTER_ID_BACKEND for full ICP functionality.",
-      );
+      console.error("CANISTER_ID_BACKEND is not set");
+      throw new Error("CANISTER_ID_BACKEND is not set");
     }
     const fallbackConfig = {
       backend_host: undefined,
-      backend_canister_id: backendCanisterId ?? "local-dev-placeholder",
+      backend_canister_id: backendCanisterId,
       storage_gateway_url: DEFAULT_STORAGE_GATEWAY_URL,
       bucket_name: DEFAULT_BUCKET_NAME,
       project_id: DEFAULT_PROJECT_ID,
