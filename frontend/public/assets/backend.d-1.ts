@@ -1,11 +1,1 @@
-import type { Principal } from "@icp-sdk/core/principal";
-export interface Some<T> {
-    __kind__: "Some";
-    value: T;
-}
-export interface None {
-    __kind__: "None";
-}
-export type Option<T> = Some<T> | None;
-export interface backendInterface {
-}
+aW1wb3J0IHR5cGUgeyBQcmluY2lwYWwgfSBmcm9tICJAaWNwLXNkay9jb3JlL3ByaW5jaXBhbCI7CmV4cG9ydCBpbnRlcmZhY2UgU29tZTxUPiB7CiAgICBfX2tpbmRfXzogIlNvbWUiOwogICAgdmFsdWU6IFQ7Cn0KZXhwb3J0IGludGVyZmFjZSBOb25lIHsKICAgIF9fa2luZF9fOiAiTm9uZSI7Cn0KZXhwb3J0IHR5cGUgT3B0aW9uPFQ+ID0gU29tZTxUPiB8IE5vbmU7CmV4cG9ydCBpbnRlcmZhY2UgYmFja2VuZEludGVyZmFjZSB7Cn0K

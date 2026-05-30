@@ -1,3 +1,7 @@
+import { useCreditsStore } from "@/combat/useCreditsStore";
+import { useStageStore } from "@/stages/useStageStore";
+import { useWaveStore } from "@/stages/useWaveStore";
+import { useXpStore } from "@/xp/useXpStore";
 import { create } from "zustand";
 import { useTutorialStore } from "../tutorial/useTutorialStore";
 
@@ -25,6 +29,7 @@ export interface AsteroidThreat {
 
 interface ThreatStore {
   threats: AsteroidThreat[];
+  lastPlayerHitAt: number;
   spawnThreat: () => void;
   updateThreats: (dt: number) => void;
   interceptThreat: (
@@ -32,6 +37,7 @@ interface ThreatStore {
     weaponType: "pulse" | "railgun" | "emp",
   ) => void;
   removeDestroyedThreats: () => void;
+  recordPlayerHit: () => void;
 }
 
 function rand(min: number, max: number) {
@@ -46,13 +52,15 @@ const WEAPON_DAMAGE: Record<"pulse" | "railgun" | "emp", number> = {
 
 export const useThreatStore = create<ThreatStore>((set, get) => ({
   threats: [],
+  lastPlayerHitAt: 0,
 
   spawnThreat: () => {
     const { threats } = get();
+    const stageConfig = useStageStore.getState().getEnemyConfig();
     const active = threats.filter(
       (t) => t.status !== "DESTROYED" && t.status !== "SURVIVED",
     );
-    if (active.length >= 3) return;
+    if (active.length >= stageConfig.maxActive) return;
 
     // Beginner assist: slower during tutorial + early-game (first 8 threats)
     const tutActive = useTutorialStore.getState().tutorialActive;
@@ -61,8 +69,8 @@ export const useThreatStore = create<ThreatStore>((set, get) => ({
     const speed = tutActive
       ? rand(0.01, 0.018) // ~4-5x slower during tutorial
       : isEarlyGame
-        ? rand(0.022, 0.038) // ~2x slower in early game
-        : rand(0.04, 0.08); // normal speed after 8 threats
+        ? rand(stageConfig.speedMin * 0.6, stageConfig.speedMax * 0.6) // ~2x slower in early game
+        : rand(stageConfig.speedMin, stageConfig.speedMax); // stage-driven speed
 
     const threat: AsteroidThreat = {
       id: `THREAT-${Date.now()}-${Math.floor(Math.random() * 9999)}`,
@@ -74,7 +82,7 @@ export const useThreatStore = create<ThreatStore>((set, get) => ({
       progress: 0,
       speed,
       status: "INCOMING",
-      health: 1.0,
+      health: 1.0 * stageConfig.healthMultiplier,
       spawnTime: Date.now(),
     };
 
@@ -106,17 +114,27 @@ export const useThreatStore = create<ThreatStore>((set, get) => ({
 
   interceptThreat: (threatId, weaponType) => {
     const damage = WEAPON_DAMAGE[weaponType];
+    let wasDestroyed = false;
     set((state) => ({
       threats: state.threats.map((t) => {
         if (t.id !== threatId) return t;
         const newHealth = Math.max(0, t.health - damage);
+        const destroyed = newHealth <= 0;
+        if (destroyed) wasDestroyed = true;
         return {
           ...t,
           health: newHealth,
-          status: newHealth <= 0 ? "DESTROYED" : t.status,
+          status: destroyed ? "DESTROYED" : t.status,
         };
       }),
     }));
+    if (wasDestroyed) {
+      useStageStore.getState().recordKill();
+      useXpStore.getState().addXp(100);
+      useXpStore.getState().addKill();
+      useWaveStore.getState().recordWaveKill();
+      useCreditsStore.getState().addCredits(10);
+    }
   },
 
   removeDestroyedThreats: () => {
@@ -125,5 +143,9 @@ export const useThreatStore = create<ThreatStore>((set, get) => ({
         (t) => t.status !== "DESTROYED" || Date.now() - t.spawnTime < 3000,
       ),
     }));
+  },
+
+  recordPlayerHit: () => {
+    set({ lastPlayerHitAt: Date.now() });
   },
 }));

@@ -1,5 +1,10 @@
+import { useCreditsStore } from "@/combat/useCreditsStore";
+import { useHullStore } from "@/combat/useHullStore";
+import { useWaveStore } from "@/stages/useWaveStore";
 import {
   checkDomSafety,
+  validateGlobeRender,
+  validateHullSystem,
   validateThreatState,
   validateWeaponState,
 } from "./runtimeValidators";
@@ -119,6 +124,81 @@ export function runGameplaySmokeTests(opts: {
         : partial(errors.join("; ") || "No threats active");
     }),
   ];
+}
+
+export function runWaveSystemSmokeTests(): QaCheckResult[] {
+  return [
+    check("wave_start_number", "Wave number starts at 1", "GAMEPLAY", () => {
+      return useWaveStore.getState().waveNumber === 1
+        ? pass()
+        : fail(`waveNumber = ${useWaveStore.getState().waveNumber}`);
+    }),
+    check("hull_start_full", "Hull starts at 100", "GAMEPLAY", () => {
+      return useHullStore.getState().hull === 100
+        ? pass()
+        : fail(`hull = ${useHullStore.getState().hull}`);
+    }),
+    check("lives_start_three", "Lives start at 3", "GAMEPLAY", () => {
+      return useHullStore.getState().lives === 3
+        ? pass()
+        : fail(`lives = ${useHullStore.getState().lives}`);
+    }),
+    check("credits_start_zero", "Credits start at 0", "GAMEPLAY", () => {
+      return useCreditsStore.getState().credits === 0
+        ? pass()
+        : fail(`credits = ${useCreditsStore.getState().credits}`);
+    }),
+    check("gameover_start_false", "isGameOver starts false", "GAMEPLAY", () => {
+      return useHullStore.getState().isGameOver === false
+        ? pass()
+        : fail(`isGameOver = ${useHullStore.getState().isGameOver}`);
+    }),
+  ];
+}
+
+export function runWaveEscalationStressTest(): {
+  passed: boolean;
+  durationMs: number;
+  message: string;
+} {
+  const start = performance.now();
+  const ws = useWaveStore.getState();
+  const initialWave = ws.waveNumber;
+
+  // Reset to wave 1 with a known enemy requirement
+  ws.startWave(1);
+  const required = useWaveStore.getState().enemiesRequired;
+
+  // Simulate rapid kills
+  for (let i = 0; i < 50; i++) {
+    useWaveStore.getState().recordWaveKill();
+  }
+
+  const afterKills = useWaveStore.getState();
+  if (!afterKills.waveCleared) {
+    return {
+      passed: false,
+      durationMs: performance.now() - start,
+      message: `waveCleared did not trigger after 50 kills (required=${required}, got=${afterKills.enemiesThisWave})`,
+    };
+  }
+
+  useWaveStore.getState().dismissWaveReward();
+  const afterDismiss = useWaveStore.getState();
+
+  if (afterDismiss.waveNumber !== initialWave + 1) {
+    return {
+      passed: false,
+      durationMs: performance.now() - start,
+      message: `waveNumber did not increment after dismissWaveReward (expected ${initialWave + 1}, got ${afterDismiss.waveNumber})`,
+    };
+  }
+
+  return {
+    passed: true,
+    durationMs: performance.now() - start,
+    message: `50 kills in ${(performance.now() - start).toFixed(1)}ms — wave cleared and advanced to ${afterDismiss.waveNumber}`,
+  };
 }
 
 export function buildSmokeTestResult(checks: QaCheckResult[]): SmokeTestResult {

@@ -101,7 +101,6 @@ function CEPSystemTrace() {
   }, []);
 
   // Boot
-  // biome-ignore lint/correctness/useExhaustiveDependencies: runs once on mount
   useEffect(() => {
     push("boot", "SYSTEM TRACE ONLINE");
     push("presence", "MONITORING INITIALISED — PRESENCE SCORE: 0");
@@ -109,7 +108,6 @@ function CEPSystemTrace() {
   }, [push]);
 
   // Level-up events (watch levelHistory length)
-  // biome-ignore lint/correctness/useExhaustiveDependencies: prevHistLen is a stable ref
   useEffect(() => {
     if (
       levelHistory.length === 0 ||
@@ -127,7 +125,6 @@ function CEPSystemTrace() {
   }, [levelHistory, push]);
 
   // Interaction events
-  // biome-ignore lint/correctness/useExhaustiveDependencies: prevIntTs is a stable ref
   useEffect(() => {
     if (!lastInteractionTs || lastInteractionTs === prevIntTs.current) return;
     prevIntTs.current = lastInteractionTs;
@@ -139,7 +136,6 @@ function CEPSystemTrace() {
 
   // Periodic score updates (every ~20 pts)
   const lastLoggedScore = useRef(0);
-  // biome-ignore lint/correctness/useExhaustiveDependencies: lastLoggedScore is a stable ref
   useEffect(() => {
     if (totalScore - lastLoggedScore.current < 20) return;
     lastLoggedScore.current = totalScore;

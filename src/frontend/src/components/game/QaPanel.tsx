@@ -73,20 +73,14 @@ export default function QaPanel() {
       : "rgba(255,60,60,0.5)"
     : "rgba(0,180,255,0.35)";
 
-  const panelBg = hasSummary
-    ? allStable
-      ? "rgba(0,40,30,0.95)"
-      : "rgba(40,10,10,0.95)"
-    : "rgba(0,10,30,0.92)";
-
-  /* ─── Collapsed pill ─────────────────────────────────────── */
+  /* ─── Collapsed pill — upper right, cockpit styled ─────── */
   if (!open) {
     return (
       <div
         style={{
           position: "fixed",
-          bottom: "clamp(8px, 2vw, 18px)",
-          right: "clamp(8px, 2vw, 18px)",
+          top: "max(8px, env(safe-area-inset-top, 8px))",
+          right: "max(8px, env(safe-area-inset-right, 8px))",
           zIndex: 9999,
           pointerEvents: "auto",
           fontFamily: "monospace",
@@ -102,19 +96,23 @@ export default function QaPanel() {
           style={{
             display: "flex",
             alignItems: "center",
-            gap: 8,
-            padding: "5px 10px",
-            background: panelBg,
+            gap: 6,
+            padding: "4px 10px",
+            background: "rgba(0,8,20,0.72)",
+            backdropFilter: "blur(8px)",
+            WebkitBackdropFilter: "blur(8px)",
             border: `1px solid ${accentColor}`,
+            borderRadius: 20,
             cursor: "pointer",
             whiteSpace: "nowrap" as const,
+            boxShadow: "0 2px 10px rgba(0,0,0,0.4)",
           }}
         >
           {running ? (
             <span
               style={{
                 color: "rgba(0,200,255,0.8)",
-                fontSize: 9,
+                fontSize: 8,
                 letterSpacing: "0.12em",
               }}
             >
@@ -173,7 +171,7 @@ export default function QaPanel() {
             <span
               style={{
                 color: "rgba(0,180,255,0.7)",
-                fontSize: 9,
+                fontSize: 8,
                 letterSpacing: "0.12em",
               }}
             >
@@ -185,13 +183,13 @@ export default function QaPanel() {
     );
   }
 
-  /* ─── Expanded panel ─────────────────────────────────────── */
+  /* ─── Expanded panel — upper right, cockpit styled ─────── */
   return (
     <div
       style={{
         position: "fixed",
-        bottom: "clamp(8px, 2vw, 18px)",
-        right: "clamp(8px, 2vw, 18px)",
+        top: "max(8px, env(safe-area-inset-top, 8px))",
+        right: "max(8px, env(safe-area-inset-right, 8px))",
         zIndex: 9999,
         pointerEvents: "auto",
         fontFamily: "monospace",
@@ -204,6 +202,8 @@ export default function QaPanel() {
         backdropFilter: "blur(8px)",
         maxHeight: "clamp(50vh, 65vh, 72vh)",
         overflow: "hidden",
+        borderRadius: 8,
+        boxShadow: "0 8px 32px rgba(0,0,0,0.6)",
       }}
     >
       {/* ── Panel header: title + close ── */}

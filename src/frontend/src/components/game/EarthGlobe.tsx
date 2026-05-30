@@ -176,6 +176,7 @@ function TargetReticle({ localPos }: { localPos: THREE.Vector3 }) {
 
 export default function EarthGlobe() {
   const { gl } = useThree();
+  const [webglFailed, setWebglFailed] = useState(false);
 
   const globeRef = useRef<THREE.Mesh>(null!);
   const atmoRef = useRef<THREE.Mesh>(null!);
@@ -249,7 +250,6 @@ export default function EarthGlobe() {
       undefined,
       (err) => console.warn("[EarthGlobe] specular tex failed:", err),
     );
-    // biome-ignore lint/correctness/useExhaustiveDependencies: gl stable after mount
   }, [gl]);
 
   const globeMat = useMemo(
@@ -449,45 +449,246 @@ export default function EarthGlobe() {
     recordTapAccepted(targetId);
   };
 
+  // ── ResizeObserver for renderer sizing ───────────────────────────────────
   useEffect(() => {
     const canvas = gl.domElement;
-    const rect = canvas.getBoundingClientRect();
-    console.log(
-      "[EarthGlobe] Canvas rect on mount:",
-      `L:${rect.left.toFixed(0)} T:${rect.top.toFixed(0)} W:${rect.width.toFixed(0)} H:${rect.height.toFixed(0)}`,
-    );
+    const parent = canvas.parentElement;
+    if (!parent) return;
+
+    const ro = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        const { width, height } = entry.contentRect;
+        if (width > 0 && height > 0) {
+          gl.setSize(width, height);
+          gl.render(
+            gl.getContext() as unknown as THREE.Scene,
+            gl.getContext() as unknown as THREE.Camera,
+          );
+        }
+      }
+    });
+    ro.observe(parent);
+
+    return () => {
+      ro.disconnect();
+    };
   }, [gl]);
+
+  // ── WebGL init safety + cleanup ─────────────────────────────────────────
+  useEffect(() => {
+    try {
+      const canvas = gl.domElement;
+      const rect = canvas.getBoundingClientRect();
+      console.log(
+        "[EarthGlobe] Canvas rect on mount:",
+        `L:${rect.left.toFixed(0)} T:${rect.top.toFixed(0)} W:${rect.width.toFixed(0)} H:${rect.height.toFixed(0)}`,
+      );
+
+      // Verify WebGL context is alive
+      const ctx = gl.getContext();
+      if (!ctx || (ctx as WebGLRenderingContext).isContextLost?.()) {
+        console.error("[EarthGlobe] WebGL context lost or unavailable");
+        setWebglFailed(true);
+      }
+    } catch (err) {
+      console.error("[EarthGlobe] WebGL init error:", err);
+      setWebglFailed(true);
+    }
+
+    return () => {
+      // Cleanup: dispose renderer, scene, geometry on unmount
+      try {
+        gl.dispose();
+        globeMat.dispose();
+        atmoRimMat.dispose();
+        if (nightMat) nightMat.dispose();
+        if (dayTexture && dayTexture !== EAGER_FALLBACK) dayTexture.dispose();
+        if (nightTexture) nightTexture.dispose();
+        if (specularTexture) specularTexture.dispose();
+        EAGER_FALLBACK.dispose();
+        console.log("[EarthGlobe] Cleaned up WebGL resources");
+      } catch (e) {
+        console.warn("[EarthGlobe] Cleanup error:", e);
+      }
+    };
+  }, [
+    gl,
+    globeMat,
+    atmoRimMat,
+    nightMat,
+    dayTexture,
+    nightTexture,
+    specularTexture,
+  ]);
 
   void globeOwnsDrag;
   void currentMode;
 
-  return (
-    <group position={[0, 0, 0]}>
-      {/* biome-ignore lint/a11y/useKeyWithClickEvents: Three.js mesh */}
-      <mesh
-        ref={globeRef}
-        name="EarthGlobeMesh"
-        onClick={handleClick}
-        onPointerOver={() => setHovered(true)}
-        onPointerOut={() => setHovered(false)}
-        material={globeMat}
+  // ── WebGL fallback: static image if renderer fails ─────────────────────
+  if (webglFailed) {
+    return (
+      <div
+        style={{
+          position: "absolute",
+          inset: 0,
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          background: "#000015",
+          zIndex: 1,
+        }}
       >
-        <sphereGeometry args={[EARTH_RADIUS, 64, 64]} />
-        {hitLocalPos && <TargetReticle localPos={hitLocalPos} />}
-      </mesh>
+        <img
+          src="/assets/generated/space-background-deep.dim_1920x1080.jpg"
+          alt="Fallback space view"
+          style={{
+            width: "100%",
+            height: "100%",
+            objectFit: "cover",
+            opacity: 0.8,
+          }}
+        />
+        <div
+          style={{
+            position: "absolute",
+            inset: 0,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+          }}
+        >
+          <span
+            style={{
+              fontFamily: "monospace",
+              fontSize: 12,
+              letterSpacing: "0.2em",
+              color: "rgba(0,180,220,0.6)",
+              textAlign: "center",
+            }}
+          >
+            PLANETARY VIEW OFFLINE
+            <br />
+            TACTICAL SYSTEMS ACTIVE
+          </span>
+        </div>
+      </div>
+    );
+  }
 
-      {nightMat && (
-        <mesh material={nightMat} raycast={() => undefined}>
-          <sphereGeometry args={[EARTH_RADIUS + 0.002, 48, 48]} />
+  return (
+    <>
+      {/* ── ATMOSPHERIC OVERLAY LAYER (pointer-events: none) ───────────── */}
+      <div
+        style={{
+          position: "absolute",
+          inset: 0,
+          pointerEvents: "none",
+          zIndex: 1,
+        }}
+      >
+        {/* Atmospheric halo */}
+        <div
+          style={{
+            position: "absolute",
+            top: "-15%",
+            left: "-15%",
+            width: "130%",
+            height: "130%",
+            borderRadius: "50%",
+            background:
+              "radial-gradient(ellipse at center, transparent 60%, rgba(100,180,255,0.18) 75%, rgba(100,180,255,0.08) 88%, transparent 100%)",
+            animation: "atmospherePulse 4s ease-in-out infinite alternate",
+            pointerEvents: "none",
+          }}
+        />
+
+        {/* Aurora streaks */}
+        {[
+          { top: "18%", left: "10%", width: "35%", rotate: "12deg", dur: "9s" },
+          {
+            top: "35%",
+            left: "55%",
+            width: "28%",
+            rotate: "-8deg",
+            dur: "11s",
+          },
+          { top: "55%", left: "20%", width: "40%", rotate: "5deg", dur: "13s" },
+          {
+            top: "72%",
+            left: "45%",
+            width: "25%",
+            rotate: "-15deg",
+            dur: "15s",
+          },
+        ].map((s, i) => (
+          <div
+            key={`aurora-${i}-${s.dur}`}
+            className="aurora-streak"
+            style={{
+              position: "absolute",
+              top: s.top,
+              left: s.left,
+              width: s.width,
+              height: "2px",
+              background:
+                "linear-gradient(90deg, transparent, rgba(0,220,180,0.3), transparent)",
+              borderRadius: "2px",
+              transform: `rotate(${s.rotate})`,
+              animation: `driftAurora ${s.dur} ease-in-out infinite alternate`,
+              pointerEvents: "none",
+            }}
+          />
+        ))}
+
+        {/* Lens flare */}
+        <div
+          style={{
+            position: "absolute",
+            top: "20%",
+            right: "25%",
+            width: "10px",
+            height: "10px",
+            borderRadius: "50%",
+            background:
+              "radial-gradient(circle, rgba(255,255,220,0.9), transparent)",
+            boxShadow: "0 0 8px 4px rgba(255,255,200,0.4)",
+            animation: "flarePulse 3s ease-in-out infinite alternate",
+            pointerEvents: "none",
+          }}
+        />
+      </div>
+
+      <group position={[0, 0, 0]}>
+        {/* biome-ignore lint/a11y/useKeyWithClickEvents: Three.js mesh */}
+        <mesh
+          ref={globeRef}
+          name="EarthGlobeMesh"
+          onClick={handleClick}
+          onPointerOver={() => setHovered(true)}
+          onPointerOut={() => setHovered(false)}
+          material={globeMat}
+        >
+          <sphereGeometry args={[EARTH_RADIUS, 64, 64]} />
+          {hitLocalPos && <TargetReticle localPos={hitLocalPos} />}
         </mesh>
-      )}
 
-      <mesh ref={atmoRef} material={atmoRimMat} raycast={() => undefined}>
-        <sphereGeometry args={[ATMO_RIM_RADIUS, 32, 32]} />
-      </mesh>
+        {nightMat && (
+          <mesh material={nightMat} raycast={() => undefined}>
+            <sphereGeometry args={[EARTH_RADIUS + 0.002, 48, 48]} />
+          </mesh>
+        )}
 
-      <ambientLight intensity={0.25} />
-      <directionalLight position={[5, 3, 4]} intensity={1.8} color="#fff8f0" />
-    </group>
+        <mesh ref={atmoRef} material={atmoRimMat} raycast={() => undefined}>
+          <sphereGeometry args={[ATMO_RIM_RADIUS, 32, 32]} />
+        </mesh>
+
+        <ambientLight intensity={0.25} />
+        <directionalLight
+          position={[5, 3, 4]}
+          intensity={1.8}
+          color="#fff8f0"
+        />
+      </group>
+    </>
   );
 }

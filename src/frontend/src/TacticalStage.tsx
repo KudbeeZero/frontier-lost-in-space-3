@@ -25,24 +25,27 @@ import { useEffect, useRef, useState } from "react";
 import { useAlertsStore } from "./alerts/useAlertsStore";
 import CEPHudAlert from "./cep/CEPHudAlert";
 import CEPSystemController from "./cep/CEPSystemController";
-import { useCEPStore } from "./cep/useCEPStore";
+import { useCreditsStore } from "./combat/useCreditsStore";
 import { useEnemyStore } from "./combat/useEnemyStore";
+import { useHullStore } from "./combat/useHullStore";
 import { usePlayerStore } from "./combat/usePlayerStore";
 import { useWeaponsStore } from "./combat/useWeapons";
 import { HostileContactCinematic } from "./components/cinematics/HostileContactCinematic";
 import InteractionDebugShell from "./components/debug/InteractionDebugShell";
 import CEPStatusPanel from "./components/game/CEPStatusPanel";
 import CameraController from "./components/game/CameraController";
+import CockpitAmbientFx from "./components/game/CockpitAmbientFx";
 import CockpitFrame from "./components/game/CockpitFrame";
 import CombatEffectsLayer from "./components/game/CombatEffectsLayer";
 import EarthGlobe from "./components/game/EarthGlobe";
 import EnemyTargetsLayer from "./components/game/EnemyTargetsLayer";
+import GameOverScreen from "./components/game/GameOverScreen";
 import { GlobeErrorBoundary } from "./components/game/GlobeErrorBoundary";
 import { HudErrorBoundary } from "./components/game/HudErrorBoundary";
 import IncomingFireLayer from "./components/game/IncomingFireLayer";
 import InputLayerDebug from "./components/game/InputLayerDebug";
-import NarrativeEventPanel from "./components/game/NarrativeEventPanel";
 import NavigationModeHUD from "./components/game/NavigationModeHUD";
+import PillControlOverlay from "./components/game/PillControlOverlay";
 import PlayerShieldHUD from "./components/game/PlayerShieldHUD";
 import PortraitCommandDrawer from "./components/game/PortraitCommandDrawer";
 import PortraitStatusBar from "./components/game/PortraitStatusBar";
@@ -55,23 +58,79 @@ import ThreatManager from "./components/game/ThreatManager";
 import TutorialOverlay from "./components/game/TutorialOverlay";
 import UpperCanopy from "./components/game/UpperCanopy";
 import VelocityIndicator from "./components/game/VelocityIndicator";
-import WeaponConsole from "./components/game/WeaponConsole";
-import WeaponGhostLayer from "./components/game/WeaponGhostLayer";
-import WeaponHologramLayer from "./components/game/WeaponHologramLayer";
+import WaveRewardScreen from "./components/game/WaveRewardScreen";
+import { XpHudBar } from "./components/game/XpHudBar";
 import { useIsLandscape } from "./hooks/useIsLandscape";
 import { useTacticalStore } from "./hooks/useTacticalStore";
 import { runInteractionAssertions } from "./interaction/interactionAssertions";
 import { useIntroStore } from "./intro/useIntroStore";
 import { useShipMovementSetup } from "./motion/useShipMovementSetup";
-import { useNarrativeStore } from "./narrative/useNarrativeStore";
 import { globalNavMode } from "./navigation/NavigationModeController";
+import { useStageStore } from "./stages/useStageStore";
+import { useWaveStore } from "./stages/useWaveStore";
+import { useGameState } from "./state/useGameState";
+import {
+  aegisHullCritical,
+  aegisIncomingThreat,
+  aegisSectorCleared,
+  aegisTargetLocked,
+} from "./systems/aegisVoice";
 import { useShipSystemsStore } from "./systems/useShipSystemsStore";
 import { useTacticalLogStore } from "./tacticalLog/useTacticalLogStore";
-import TutorialPromptModal from "./tutorial/TutorialPromptModal";
 import { useTutorialStore } from "./tutorial/useTutorialStore";
 import { bootTrace } from "./utils/bootTrace";
+import { useXpStore } from "./xp/useXpStore";
 
 const DPR: [number, number] = [1, 2];
+
+/* ── AEGIS Voice Callout Effects ───────────────────────────────────── */
+function AegisVoiceEffects() {
+  const selectedNode = useTacticalStore((s) => s.selectedNode);
+  const prevSelectedNode = useRef<string | null>(null);
+
+  const threats = useEnemyStore((s) => s.enemies);
+  const prevThreatCount = useRef<number>(0);
+
+  const isHullCritical = useHullStore((s) => s.isHullCritical);
+  const prevHullCritical = useRef<boolean>(false);
+
+  const sectorCleared = useXpStore((s) => s.sectorCleared);
+  const prevSectorCleared = useRef<boolean>(false);
+
+  useEffect(() => {
+    if (selectedNode && selectedNode !== prevSelectedNode.current) {
+      aegisTargetLocked();
+    }
+    prevSelectedNode.current = selectedNode;
+  }, [selectedNode]);
+
+  useEffect(() => {
+    const activeThreats = threats.filter((t) => t.status === "active").length;
+    if (
+      activeThreats > prevThreatCount.current &&
+      prevThreatCount.current > 0
+    ) {
+      aegisIncomingThreat();
+    }
+    prevThreatCount.current = activeThreats;
+  }, [threats]);
+
+  useEffect(() => {
+    if (isHullCritical && !prevHullCritical.current) {
+      aegisHullCritical();
+    }
+    prevHullCritical.current = isHullCritical;
+  }, [isHullCritical]);
+
+  useEffect(() => {
+    if (sectorCleared && !prevSectorCleared.current) {
+      aegisSectorCleared();
+    }
+    prevSectorCleared.current = sectorCleared;
+  }, [sectorCleared]);
+
+  return null;
+}
 
 function WeaponsTick() {
   useEffect(() => {
@@ -117,46 +176,6 @@ function GameBootstrap() {
     );
     console.log("[NAV-MODE] Session initialized — forced to tacticalLock");
   }, []);
-  return null;
-}
-
-function NarrativeController() {
-  const cepLevel = useCEPStore((s) => s.level);
-  const tutorialActive = useTutorialStore((s) => s.tutorialActive);
-  const tutorialComplete = useTutorialStore((s) => s.tutorialComplete);
-  const tutorialSkipped = useTutorialStore((s) => s.tutorialSkipped);
-  const tutorialDone = tutorialComplete || tutorialSkipped;
-  const firedFirstContact = useRef(false);
-  const firedCepWarning = useRef(false);
-  const firedRevelation = useRef(false);
-
-  useEffect(() => {
-    if (tutorialActive) return;
-    if (firedFirstContact.current) return;
-    const delay = tutorialDone ? 1500 : 5000;
-    const t = setTimeout(() => {
-      if (firedFirstContact.current) return;
-      if (useTutorialStore.getState().tutorialActive) return;
-      firedFirstContact.current = true;
-      useNarrativeStore.getState().triggerEvent("phase1_first_contact");
-    }, delay);
-    return () => clearTimeout(t);
-  }, [tutorialActive, tutorialDone]);
-
-  useEffect(() => {
-    if (cepLevel >= 2 && !firedCepWarning.current && !tutorialActive) {
-      firedCepWarning.current = true;
-      useNarrativeStore.getState().triggerEvent("phase1_cep_warning");
-    }
-  }, [cepLevel, tutorialActive]);
-
-  useEffect(() => {
-    if (cepLevel >= 4 && !firedRevelation.current && !tutorialActive) {
-      firedRevelation.current = true;
-      useNarrativeStore.getState().triggerEvent("phase1_aegis_revelation");
-    }
-  }, [cepLevel, tutorialActive]);
-
   return null;
 }
 
@@ -366,60 +385,6 @@ function RotateToPlayGate() {
   );
 }
 
-/**
- * OverlayControlPanel — bottom-right weapon + fire controls.
- *
- * Inspired by top mobile games:
- * - Anchored to bottom-right with safe-area padding
- * - Semi-transparent so the globe shows through
- * - Scale via clamp() for consistent size across devices
- * - pointer-events: auto only on interactive children
- */
-function OverlayControlPanel() {
-  return (
-    <div
-      style={{
-        position: "absolute",
-        bottom: 0,
-        right: 0,
-        zIndex: 40,
-        // Safe area for iPhone notch / home indicator
-        paddingBottom: "max(8px, env(safe-area-inset-bottom))",
-        paddingRight: "max(8px, env(safe-area-inset-right))",
-        // Scale the whole panel proportionally — clamp prevents too-small on phone
-        width: "clamp(240px, 30vw, 360px)",
-        // Subtle dark gradient so controls are readable but globe shows through
-        background:
-          "linear-gradient(135deg, rgba(0,4,12,0.0) 0%, rgba(0,4,12,0.55) 40%, rgba(0,4,12,0.75) 100%)",
-        borderTop: "1px solid rgba(0,200,255,0.08)",
-        borderLeft: "1px solid rgba(0,200,255,0.08)",
-        borderTopLeftRadius: 12,
-        backdropFilter: "blur(6px)",
-        WebkitBackdropFilter: "blur(6px)",
-        display: "flex",
-        flexDirection: "column",
-        gap: 0,
-        // Hologram + ghost layers are decorative — keep pointer-events off on wrapper
-        // WeaponConsole handles its own pointer-events internally
-      }}
-    >
-      {/* Hologram + ghost — decorative, no pointer events */}
-      <div style={{ pointerEvents: "none", flexShrink: 0 }}>
-        <HudErrorBoundary name="Hologram">
-          <WeaponHologramLayer />
-        </HudErrorBoundary>
-      </div>
-      <div style={{ pointerEvents: "none", flexShrink: 0 }}>
-        <WeaponGhostLayer />
-      </div>
-      {/* WeaponConsole — fully interactive */}
-      <div style={{ flexShrink: 0 }}>
-        <WeaponConsole />
-      </div>
-    </div>
-  );
-}
-
 /** Inner component — only renders when landscape is confirmed */
 function TacticalStageInner() {
   const [diagOpen, setDiagOpen] = useState(false);
@@ -427,36 +392,33 @@ function TacticalStageInner() {
   const sceneReadyRef = useRef(false);
   const viewportRef = useRef<HTMLDivElement>(null);
 
-  const tutorialComplete = useTutorialStore((s) => s.tutorialComplete);
-  const tutorialSkipped = useTutorialStore((s) => s.tutorialSkipped);
-  const pendingTutorialStart = useIntroStore((s) => s.pendingTutorialStart);
-  const consumeTutorialStart = useIntroStore((s) => s.consumeTutorialStart);
-  const [showTutorialPrompt, setShowTutorialPrompt] = useState(false);
-  const promptDecidedRef = useRef(false);
+  // ── Game Over state ──
+  const isGameOver = useHullStore((s) => s.isGameOver);
+  const waveNumber = useWaveStore((s) => s.waveNumber);
+  const totalKills = useXpStore((s) => s.totalKills);
+  const setMode = useGameState((s) => s.setMode);
 
+  // ── Wave reward state ──
+  const isShowingWaveReward = useWaveStore((s) => s.isShowingWaveReward);
+  const waveCleared = useWaveStore((s) => s.waveCleared);
+
+  // Auto-show wave reward after wave cleared
   useEffect(() => {
-    if (promptDecidedRef.current) return;
-    if (tutorialComplete || tutorialSkipped) {
-      if (pendingTutorialStart) consumeTutorialStart();
-      return;
+    if (waveCleared && !isShowingWaveReward) {
+      const t = setTimeout(() => {
+        useWaveStore.getState().showWaveReward();
+      }, 1500);
+      return () => clearTimeout(t);
     }
-    const t = setTimeout(() => {
-      if (promptDecidedRef.current) return;
-      promptDecidedRef.current = true;
-      if (pendingTutorialStart) {
-        consumeTutorialStart();
-        useTutorialStore.getState().startTutorial();
-      } else {
-        setShowTutorialPrompt(true);
-      }
-    }, 1200);
-    return () => clearTimeout(t);
-  }, [
-    tutorialComplete,
-    tutorialSkipped,
-    pendingTutorialStart,
-    consumeTutorialStart,
-  ]);
+  }, [waveCleared, isShowingWaveReward]);
+
+  const handlePlayAgain = () => {
+    useHullStore.getState().resetGame();
+    useWaveStore.getState().resetWave();
+    useCreditsStore.getState().resetCredits();
+    useXpStore.getState().reset();
+    setMode("menu");
+  };
 
   useEffect(() => {
     bootTrace("TacticalStage mounted");
@@ -521,8 +483,8 @@ function TacticalStageInner() {
       <WeaponsTick />
       <DegradationTicker />
       <CEPSystemController />
-      <NarrativeController />
       <CEPHudAlert />
+      <AegisVoiceEffects />
 
       {/* ── FULL-SCREEN GLOBE VIEWPORT ─────────────────────────────────── */}
       {/*
@@ -533,6 +495,7 @@ function TacticalStageInner() {
       <div
         ref={viewportRef}
         data-layer="viewport"
+        className="cockpit-frame"
         style={{
           position: "absolute",
           inset: 0,
@@ -543,6 +506,25 @@ function TacticalStageInner() {
           backgroundColor: "#000015",
         }}
       >
+        {/* Parallax depth layers */}
+        <div
+          className="parallax-bg"
+          style={{
+            position: "absolute",
+            inset: 0,
+            zIndex: 0,
+            pointerEvents: "none",
+          }}
+        />
+        <div
+          className="parallax-fg"
+          style={{
+            position: "absolute",
+            inset: 0,
+            zIndex: 1,
+            pointerEvents: "none",
+          }}
+        />
         <BootFadeOverlay visible={!sceneReady} />
         <HostileContactCinematic viewportRef={viewportRef} />
 
@@ -649,10 +631,26 @@ function TacticalStageInner() {
           <VelocityIndicator />
         </div>
 
-        {/* Radar — top-right (gives space for weapon console bottom-right) */}
-        <HudErrorBoundary name="Radar">
-          <RadarSystem />
-        </HudErrorBoundary>
+        {/* Radar — top-left (moved from top-right to avoid QA panel overlap) */}
+        <div
+          style={{
+            position: "absolute",
+            top: "clamp(10px, 2.5vh, 24px)",
+            left: "clamp(10px, 2.5vw, 24px)",
+            zIndex: 22,
+            pointerEvents: "none",
+          }}
+        >
+          <HudErrorBoundary name="Radar">
+            <RadarSystem />
+          </HudErrorBoundary>
+        </div>
+
+        {/* Cockpit ambient FX — dust particles, scanlines, vignette */}
+        <CockpitAmbientFx />
+
+        {/* XP / Stage HUD bar — top center, above globe */}
+        <XpHudBar />
 
         <PlayerHitFlash />
       </div>
@@ -664,33 +662,62 @@ function TacticalStageInner() {
        * pointer-events only active on interactive elements inside.
        */}
 
-      {/* Weapon + fire console — bottom-right overlay */}
-      <OverlayControlPanel />
+      {/* Weapon + fire console — bottom-center overlay */}
+      <PillControlOverlay />
 
-      {/* Narrative event panel — center overlay */}
-      <NarrativeEventPanel />
+      {/* QA Panel — upper right, cockpit styled */}
+      <QaPanel />
 
       {/* Drawer + log — existing components */}
       <PortraitCommandDrawer />
       <TacticalLogPanel />
       <TutorialOverlay />
 
-      {showTutorialPrompt && (
-        <TutorialPromptModal
-          onClose={() => {
-            promptDecidedRef.current = true;
-            setShowTutorialPrompt(false);
-          }}
-        />
-      )}
+      {/* ── GAME OVER OVERLAY ── */}
+      <GameOverScreen
+        isVisible={isGameOver}
+        finalScore={totalKills * 100}
+        waveReached={waveNumber}
+        totalKills={totalKills}
+        onPlayAgain={handlePlayAgain}
+      />
+
+      {/* ── WAVE REWARD SCREEN ── */}
+      <WaveRewardScreen
+        isVisible={isShowingWaveReward}
+        waveNumber={waveNumber}
+        creditsEarned={totalKills * 10}
+        onHullRepair={() => {
+          const store = useCreditsStore.getState();
+          if (store.spendCredits(50)) {
+            useHullStore.getState().repairHull(50);
+          }
+        }}
+        onWeaponUpgrade={() => {
+          const store = useCreditsStore.getState();
+          if (store.spendCredits(75)) {
+            // Weapon upgrade: stored in local ref for enemy health multiplier
+            // For now, just spend credits; multiplier applied in threat store
+          }
+        }}
+        onShieldRecharge={() => {
+          const store = useCreditsStore.getState();
+          if (store.spendCredits(40)) {
+            useHullStore.getState().repairHull(25);
+          }
+        }}
+        onContinue={() => {
+          useWaveStore.getState().dismissWaveReward();
+        }}
+      />
 
       <DiagnosticsTrigger onOpen={() => setDiagOpen((v) => !v)} />
       {diagOpen && (
         <div
           style={{
             position: "fixed",
-            bottom: 116,
-            right: 44,
+            top: "max(44px, env(safe-area-inset-top, 44px))",
+            right: "max(8px, env(safe-area-inset-right, 8px))",
             zIndex: 9998,
             width: "min(340px, 90vw)",
             maxHeight: "60vh",

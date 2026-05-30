@@ -7,13 +7,15 @@ import DiagnosticHUD from "./components/debug/DiagnosticHUD";
 import SpacePhysicsDebug from "./components/debug/SpacePhysicsDebug";
 import CockpitOverlay from "./components/game/CockpitOverlay";
 import GameStateDebugOverlay from "./components/game/GameStateDebugOverlay";
-import IntroSequence from "./components/game/IntroSequence";
 import MenuBackground from "./components/game/MenuBackground";
 import StartCampaignButton from "./components/ui/StartCampaignButton";
-import CinematicIntro from "./intro/CinematicIntro";
-import { useIntroStore } from "./intro/useIntroStore";
 import { useGameState } from "./state/useGameState";
 import { bootTrace } from "./utils/bootTrace";
+
+// NOTE: CinematicIntro, IntroSequence, and StoryEventModal are intentionally
+// removed from the active game flow. They remain in the codebase but are not
+// imported or rendered at the app root level. To re-enable, restore imports
+// and add conditional rendering for mode === "intro".
 
 // ── Error Boundary ──────────────────────────────────────────────────────────
 interface EBState {
@@ -140,50 +142,24 @@ function GameModeDebug({ mode }: { mode: string }) {
 }
 
 export default function App() {
-  const introPlaying = useIntroStore((s) => s.introPlaying);
-  const introComplete = useIntroStore((s) => s.introComplete);
-  const initIntroGating = useIntroStore((s) => s.initIntroGating);
+  // ── SIMPLIFIED FLOW: START HERE → game directly ───────────────────────────
+  //    CinematicIntro and IntroSequence are bypassed.
+  //    Re-enable by restoring introPlaying/introComplete/initIntroGating
+  //    selectors and the effects below.
   const mode = useGameState((s) => s.mode);
-  const setMode = useGameState((s) => s.setMode);
   const phase = useBootStore((s) => s.phase);
   const bootStarted = useRef(false);
-  const initRef = useRef(false);
-
-  // ── Track the PREVIOUS value of introComplete so we can detect the
-  //    false → true transition that means the cinematic just finished.
-  //    (The old introWasPlayingRef approach failed because it was set
-  //    once at mount and never updated when triggerNewGame() flipped
-  //    introPlaying false → true → false mid-session.)
-  const prevIntroCompleteRef = useRef(introComplete);
 
   // ── Boot trace — logs every render with current mode ─────────────────────
   bootTrace(`App render — mode: ${mode}`);
-  console.log(
-    `[GameState] App render — mode: ${mode} | introPlaying: ${introPlaying} | introComplete: ${introComplete}`,
-  );
+  console.log(`[GameState] App render — mode: ${mode}`);
 
   // ── [FLOW] Log every mode transition ──────────────────────────────────────
   useEffect(() => {
     console.log("[FLOW] mode changed to:", mode);
   }, [mode]);
 
-  // ── Auto-transition: CinematicIntro ends → campaign intro ────────────────
-  //    Fires when introComplete flips from false → true while the player
-  //    is still on the menu (i.e. the cinematic just finished or was skipped
-  //    after clicking START HERE).
-  useEffect(() => {
-    const wasComplete = prevIntroCompleteRef.current;
-    prevIntroCompleteRef.current = introComplete;
-
-    if (!wasComplete && introComplete && mode === "menu") {
-      console.log(
-        "[FLOW] CinematicIntro complete → auto-launching campaign intro",
-      );
-      setMode("intro");
-    }
-  }, [introComplete, mode, setMode]);
-
-  // ── App mounted — init stores ─────────────────────────────────────────────
+  // ── App mounted ───────────────────────────────────────────────────────────
   useEffect(() => {
     bootTrace("App mounted");
   }, []);
@@ -194,21 +170,6 @@ export default function App() {
     bootStarted.current = true;
     runBootSequence(useBootStore.getState());
   }, []);
-
-  // ── One-time init: intro gating + safety fallback ─────────────────────────
-  useEffect(() => {
-    if (initRef.current) return;
-    initRef.current = true;
-    console.log("[App] Boot — initialising intro gating");
-    initIntroGating();
-    setTimeout(() => {
-      const state = useIntroStore.getState();
-      if (!state.introPlaying && !state.introComplete) {
-        console.warn("[App] Safety fallback: bypassing intro (stuck state)");
-        state.skipIntro();
-      }
-    }, 600);
-  }, [initIntroGating]);
 
   // ── NEVER render null — boot screen gates the app ────────────────────────
   if (phase !== "ready") return <BootLoadingScreen />;
@@ -243,96 +204,86 @@ export default function App() {
           position: "relative",
         }}
       >
-        {/* CinematicIntro mounts whenever introPlaying is true —
-            this now includes manual triggers from START HERE */}
-        {introPlaying && <CinematicIntro />}
-
-        {!introPlaying && (
-          <>
-            {/* ── MENU MODE ─────────────────────────────────────────────── */}
-            {mode === "menu" && (
+        {/* ── MENU MODE ──────────────────────────────────────────────────── */}
+        {mode === "menu" && (
+          <div
+            style={{
+              position: "relative",
+              width: "100%",
+              height: "100dvh",
+              background: "#000010",
+              overflow: "hidden",
+            }}
+          >
+            <MenuBackground />
+            <div
+              style={{
+                position: "absolute",
+                inset: 0,
+                background: "rgba(0,0,8,0.45)",
+                pointerEvents: "none",
+                zIndex: 2,
+              }}
+            />
+            <div
+              style={{
+                position: "absolute",
+                inset: 0,
+                display: "flex",
+                flexDirection: "column",
+                alignItems: "center",
+                justifyContent: "center",
+                pointerEvents: "none",
+                zIndex: 10,
+              }}
+            >
               <div
                 style={{
-                  position: "relative",
-                  width: "100%",
-                  height: "100dvh",
-                  background: "#000010",
-                  overflow: "hidden",
+                  fontFamily: "monospace",
+                  color: "rgba(220,240,255,0.92)",
+                  letterSpacing: "0.55em",
+                  fontSize: "clamp(22px, 4.5vw, 56px)",
+                  fontWeight: 700,
+                  whiteSpace: "nowrap",
+                  textShadow:
+                    "0 0 32px rgba(0,200,255,0.45), 0 2px 4px rgba(0,0,0,0.8)",
+                  lineHeight: 1,
                 }}
               >
-                <MenuBackground />
-                <div
-                  style={{
-                    position: "absolute",
-                    inset: 0,
-                    background: "rgba(0,0,8,0.45)",
-                    pointerEvents: "none",
-                    zIndex: 2,
-                  }}
-                />
-                <div
-                  style={{
-                    position: "absolute",
-                    inset: 0,
-                    display: "flex",
-                    flexDirection: "column",
-                    alignItems: "center",
-                    justifyContent: "center",
-                    pointerEvents: "none",
-                    zIndex: 10,
-                  }}
-                >
-                  <div
-                    style={{
-                      fontFamily: "monospace",
-                      color: "rgba(220,240,255,0.92)",
-                      letterSpacing: "0.55em",
-                      fontSize: "clamp(22px, 4.5vw, 56px)",
-                      fontWeight: 700,
-                      whiteSpace: "nowrap",
-                      textShadow:
-                        "0 0 32px rgba(0,200,255,0.45), 0 2px 4px rgba(0,0,0,0.8)",
-                      lineHeight: 1,
-                    }}
-                  >
-                    FRONTIER
-                  </div>
-                  <div
-                    style={{
-                      marginTop: "10px",
-                      fontFamily: "monospace",
-                      color: "rgba(80,190,120,0.72)",
-                      letterSpacing: "0.38em",
-                      fontSize: "clamp(9px, 1.4vw, 16px)",
-                      whiteSpace: "nowrap",
-                      textShadow: "0 0 12px rgba(60,200,100,0.25)",
-                      lineHeight: 1,
-                    }}
-                  >
-                    LOST IN SPACE
-                  </div>
-                  <div style={{ pointerEvents: "auto" }}>
-                    <StartCampaignButton />
-                  </div>
-                </div>
+                FRONTIER
               </div>
-            )}
+              <div
+                style={{
+                  marginTop: "10px",
+                  fontFamily: "monospace",
+                  color: "rgba(80,190,120,0.72)",
+                  letterSpacing: "0.38em",
+                  fontSize: "clamp(9px, 1.4vw, 16px)",
+                  whiteSpace: "nowrap",
+                  textShadow: "0 0 12px rgba(60,200,100,0.25)",
+                  lineHeight: 1,
+                }}
+              >
+                LOST IN SPACE
+              </div>
+              <div style={{ pointerEvents: "auto" }}>
+                <StartCampaignButton />
+              </div>
+            </div>
+          </div>
+        )}
 
-            {/* ── INTRO / GAME MODE — TacticalStage always mounts here ────── */}
-            {(mode === "intro" || mode === "game") && (
-              <GameRootErrorBoundary>
-                <TacticalStage />
-              </GameRootErrorBoundary>
-            )}
+        {/* ── GAME MODE — TacticalStage ──────────────────────────────────── */}
+        {/* CinematicIntro + IntroSequence bypassed — START HERE → game direct */}
+        {mode === "game" && (
+          <GameRootErrorBoundary>
+            <TacticalStage />
+          </GameRootErrorBoundary>
+        )}
 
-            {/* IntroSequence overlays TacticalStage during intro mode */}
-            {mode === "intro" && <IntroSequence />}
-
-            {/* ── CATCH-ALL — unexpected / undefined mode ────────────────── */}
-            {mode !== "menu" && mode !== "intro" && mode !== "game" && (
-              <UnmatchedModeFallback mode={mode} />
-            )}
-          </>
+        {/* ── CATCH-ALL — unexpected / undefined mode ────────────────────── */}
+        {mode !== "menu" && mode !== "game" && (
+          <UnmatchedModeFallback mode={mode} />
         )}
 
         <CockpitOverlay />

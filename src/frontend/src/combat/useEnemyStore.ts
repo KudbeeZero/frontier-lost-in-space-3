@@ -1,3 +1,5 @@
+import { useStageStore } from "@/stages/useStageStore";
+import { useXpStore } from "@/xp/useXpStore";
 /**
  * useEnemyStore — enemy targets (satellites + planetary bases) + return fire.
  *
@@ -236,20 +238,28 @@ export const useEnemyStore = create<EnemyStore>((set, get) => ({
 
   damageEnemy: (id: string, weaponType: string) => {
     const damage = ENEMY_WEAPON_DAMAGE[weaponType] ?? 0.3;
+    let wasDestroyed = false;
     set((state) => ({
       enemies: state.enemies.map((e) => {
         if (e.id !== id) return e;
         const newHealth = Math.max(0, e.health - damage);
+        const destroyed = newHealth <= 0;
+        if (destroyed) wasDestroyed = true;
         return {
           ...e,
           health: newHealth,
-          status: newHealth <= 0 ? "destroyed" : e.status,
-          destroyedAt: newHealth <= 0 ? Date.now() : e.destroyedAt,
+          status: destroyed ? "destroyed" : e.status,
+          destroyedAt: destroyed ? Date.now() : e.destroyedAt,
           hitFlash: true,
           hitFlashAt: Date.now(),
         };
       }),
     }));
+    if (wasDestroyed) {
+      useStageStore.getState().recordKill();
+      useXpStore.getState().addXp(100);
+      useXpStore.getState().addKill();
+    }
     // Clear hit flash after 300 ms
     setTimeout(() => {
       set((state) => ({

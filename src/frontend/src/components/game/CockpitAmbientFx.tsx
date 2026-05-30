@@ -1,4 +1,7 @@
-import { useMemo } from "react";
+import { useThreatStore } from "@/combat/useThreatStore";
+import { useWeaponsStore } from "@/combat/useWeapons";
+import { useEffect, useMemo, useRef } from "react";
+import { useHullStore } from "../../combat/useHullStore";
 
 // Particle data generated once per mount — no JS animation loop
 interface Particle {
@@ -14,6 +17,32 @@ interface Particle {
 }
 
 export default function CockpitAmbientFx() {
+  const { lastFireAt } = useWeaponsStore();
+  const { lastPlayerHitAt } = useThreatStore();
+  const isHullCritical = useHullStore((s) => s.isHullCritical);
+  const shockwaveRef = useRef<HTMLDivElement>(null);
+  const damageRef = useRef<HTMLDivElement>(null);
+
+  // Trigger shockwave on weapon fire
+  useEffect(() => {
+    if (lastFireAt > 0 && shockwaveRef.current) {
+      const el = shockwaveRef.current;
+      el.style.animation = "none";
+      el.offsetHeight; // force reflow
+      el.style.animation = "shockwave-ripple 0.6s ease-out forwards";
+    }
+  }, [lastFireAt]);
+
+  // Trigger damage flash on player hit
+  useEffect(() => {
+    if (lastPlayerHitAt > 0 && damageRef.current) {
+      const el = damageRef.current;
+      el.style.animation = "none";
+      el.offsetHeight; // force reflow
+      el.style.animation = "damage-flash 0.4s ease-out forwards";
+    }
+  }, [lastPlayerHitAt]);
+
   const particles = useMemo<Particle[]>(() => {
     // Seeded deterministic-ish distribution so SSR / hydration stays stable
     const rng = (seed: number) => {
@@ -49,8 +78,29 @@ export default function CockpitAmbientFx() {
       }}
       aria-hidden="true"
     >
+      {/* ── Hull Critical Overlay ───────────────────────────── */}
+      {isHullCritical && (
+        <div
+          className="hull-critical-overlay"
+          style={{
+            position: "fixed",
+            inset: 0,
+            zIndex: 200,
+            pointerEvents: "none",
+          }}
+        />
+      )}
       <style>{`
-        /* ── Existing ambient effects ── */
+        /* ── Shockwave ripple on fire ── */
+        @keyframes shockwave-ripple {
+          0% { transform: scale(0.5); opacity: 0.6; }
+          100% { transform: scale(2.5); opacity: 0; }
+        }
+        /* ── Damage red flash ── */
+        @keyframes damage-flash {
+          0% { opacity: 0.5; }
+          100% { opacity: 0; }
+        }
         @keyframes cockpit-breathe {
           0%, 100% { opacity: 0.3; }
           50% { opacity: 0.7; }
@@ -135,6 +185,33 @@ export default function CockpitAmbientFx() {
           94%, 100% { transform: translate(0, 0); }
         }
       `}</style>
+
+      {/* ─── Shockwave overlay on fire ─────────────────────── */}
+      <div
+        ref={shockwaveRef}
+        style={{
+          position: "absolute",
+          inset: 0,
+          background:
+            "radial-gradient(circle at 50% 50%, rgba(6,182,212,0.15) 0%, transparent 70%)",
+          opacity: 0,
+          pointerEvents: "none",
+          zIndex: 20,
+        }}
+      />
+      {/* ─── Damage flash overlay ────────────────────────────── */}
+      <div
+        ref={damageRef}
+        style={{
+          position: "absolute",
+          inset: 0,
+          background:
+            "radial-gradient(ellipse at 50% 50%, transparent 40%, rgba(220,38,38,0.3) 100%)",
+          opacity: 0,
+          pointerEvents: "none",
+          zIndex: 21,
+        }}
+      />
 
       {/* ─── Existing breathing glow panels ─────────────────── */}
       <div

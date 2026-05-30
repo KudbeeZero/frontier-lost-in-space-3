@@ -6,6 +6,12 @@ import { useCombatState } from "./useCombatState";
 import type { WeaponType } from "./useCombatState";
 import { useEnemyStore } from "./useEnemyStore";
 import { useThreatStore } from "./useThreatStore";
+import {
+  initAudio,
+  playFire,
+  playImpact,
+  playMissileWind,
+} from "./weaponSynth";
 
 export type WeaponStatus = "READY" | "COOLDOWN" | "RELOADING";
 
@@ -28,13 +34,16 @@ export interface Weapon {
   requiresLock?: boolean;
 }
 
-/** Active 4-slot loadout */
+/**
+ * Active 4-slot loadout.
+ * NOTE: cooldownTime set to 0 for testing — all weapons fire instantly.
+ */
 const INITIAL_WEAPONS: Weapon[] = [
   {
     id: "pulse",
     name: "PULSE CANNON",
     shortLabel: "PULSE",
-    cooldownTime: 1200,
+    cooldownTime: 0,
     currentCooldown: 0,
     status: "READY",
     type: "pulse",
@@ -45,22 +54,22 @@ const INITIAL_WEAPONS: Weapon[] = [
     id: "rail",
     name: "RAIL GUN",
     shortLabel: "RAIL GUN",
-    cooldownTime: 900,
+    cooldownTime: 0,
     currentCooldown: 0,
     status: "READY",
     type: "railgun",
     color: "#44aaff",
     glowColor: "rgba(68,170,255,0.4)",
-    ammo: 5,
-    maxAmmo: 5,
-    reloadTime: 3000,
+    ammo: 999,
+    maxAmmo: 999,
+    reloadTime: 1,
     reloadProgress: 0,
   },
   {
     id: "missile",
     name: "HEAT MISSILE",
     shortLabel: "MISSILE",
-    cooldownTime: 4500,
+    cooldownTime: 0,
     currentCooldown: 0,
     status: "READY",
     type: "missile",
@@ -72,7 +81,7 @@ const INITIAL_WEAPONS: Weapon[] = [
     id: "emp",
     name: "EMP BURST",
     shortLabel: "EMP",
-    cooldownTime: 5000,
+    cooldownTime: 0,
     currentCooldown: 0,
     status: "READY",
     type: "emp",
@@ -87,6 +96,7 @@ export const INVENTORY_WEAPONS: Weapon[] = [];
 interface WeaponsStore {
   weapons: Weapon[];
   selectedWeaponId: string;
+  lastFireAt: number;
   selectWeapon: (weaponId: string) => void;
   fire: (weaponId: string) => void;
   fireSelected: () => void;
@@ -97,8 +107,10 @@ export const useWeaponsStore = create<WeaponsStore>((set, get) => ({
   weapons: INITIAL_WEAPONS,
   selectedWeaponId: "pulse",
 
+  lastFireAt: 0,
+
   selectWeapon: (weaponId: string) => {
-    set({ selectedWeaponId: weaponId });
+    set({ selectedWeaponId: weaponId, lastFireAt: Date.now() });
   },
 
   fireSelected: () => {
@@ -107,13 +119,16 @@ export const useWeaponsStore = create<WeaponsStore>((set, get) => ({
   },
 
   fire: (weaponId: string) => {
+    // Ensure AudioContext is unlocked (iOS requires gesture-driven init)
+    initAudio();
+
     const { selectedNode } = useTacticalStore.getState();
     if (!selectedNode) return;
 
     const weapon = get().weapons.find((w) => w.id === weaponId);
     if (!weapon) return;
     if (weapon.status !== "READY") return;
-    // Rail gun ammo check
+    // Rail gun ammo check (ammo is effectively unlimited in testing mode)
     if (weapon.type === "railgun" && (weapon.ammo ?? 1) <= 0) return;
 
     const {
@@ -165,6 +180,18 @@ export const useWeaponsStore = create<WeaponsStore>((set, get) => ({
 
     triggerBattleJolt(weapon.type);
 
+    // ─── WEAPON FIRE SOUND ─────────────────────────────────────────────────
+    const wType = weapon.type as "pulse" | "railgun" | "missile" | "emp";
+    playFire(wType);
+    if (wType === "missile") {
+      playMissileWind();
+    }
+
+    // Schedule impact sound after projectile travels
+    setTimeout(() => {
+      playImpact(wType);
+    }, duration);
+
     // ─── Spawn projectile in physics system ─────────────────────────────────
     const physState = useSpacePhysicsStore.getState();
     physState.fireProjectile(
@@ -184,7 +211,7 @@ export const useWeaponsStore = create<WeaponsStore>((set, get) => ({
       setTimeout(() => setEmpStunnedNode(null), 3000);
     }
 
-    // Log the fire event
+    set({ lastFireAt: Date.now() });
     useTacticalStore.getState().pushEventLog({
       msg: `${weapon.name} FIRED \u2192 ${selectedNode}`,
       type: "fire",
@@ -258,37 +285,26 @@ export const useWeaponsStore = create<WeaponsStore>((set, get) => ({
       }
     }
 
-    // Update weapon state after firing
+    // Update weapon state after firing — cooldowns are 0 so always READY
     set((state) => ({
       weapons: state.weapons.map((w) => {
         if (w.id !== weaponId) return w;
-        // Rail gun: decrement ammo, trigger reload if empty
+        // Rail gun: decrement ammo (effectively unlimited in testing mode)
         if (w.type === "railgun") {
           const newAmmo = (w.ammo ?? 1) - 1;
           if (newAmmo <= 0) {
-            import("../tacticalLog/useTacticalLogStore").then(
-              ({ useTacticalLogStore }) => {
-                useTacticalLogStore.getState().addEntry({
-                  type: "system",
-                  message: "RAIL GUN AMMO DEPLETED — RELOADING",
-                });
-              },
-            );
             return {
               ...w,
-              ammo: 0,
-              status: "RELOADING" as WeaponStatus,
+              ammo: w.maxAmmo ?? 999,
+              status: "READY" as WeaponStatus,
               reloadProgress: 0,
             };
           }
-          return {
-            ...w,
-            ammo: newAmmo,
-            status: "COOLDOWN" as WeaponStatus,
-            currentCooldown: 1,
-          };
+          // cooldownTime is 0 — stays READY
+          return { ...w, ammo: newAmmo, status: "READY" as WeaponStatus };
         }
-        return { ...w, status: "COOLDOWN" as WeaponStatus, currentCooldown: 1 };
+        // All other weapons — cooldown is 0, stay READY immediately
+        return { ...w, status: "READY" as WeaponStatus, currentCooldown: 0 };
       }),
     }));
   },
@@ -296,18 +312,10 @@ export const useWeaponsStore = create<WeaponsStore>((set, get) => ({
   tick: (dtMs: number) => {
     set((state) => ({
       weapons: state.weapons.map((w) => {
-        // Handle reloading (rail gun)
+        // Handle reloading (rail gun) — reloadTime is 1ms so instant
         if (w.status === "RELOADING" && w.reloadTime) {
           const nextProgress = (w.reloadProgress ?? 0) + dtMs / w.reloadTime;
           if (nextProgress >= 1) {
-            import("../tacticalLog/useTacticalLogStore").then(
-              ({ useTacticalLogStore }) => {
-                useTacticalLogStore.getState().addEntry({
-                  type: "system",
-                  message: "RAIL GUN RELOAD COMPLETE",
-                });
-              },
-            );
             return {
               ...w,
               status: "READY" as WeaponStatus,
@@ -318,9 +326,9 @@ export const useWeaponsStore = create<WeaponsStore>((set, get) => ({
           }
           return { ...w, reloadProgress: nextProgress };
         }
-        // Handle cooldown
+        // Handle cooldown — with cooldownTime=0, this path is never entered
         if (w.status !== "COOLDOWN") return w;
-        const next = w.currentCooldown - dtMs / w.cooldownTime;
+        const next = w.currentCooldown - dtMs / Math.max(1, w.cooldownTime);
         if (next <= 0)
           return { ...w, currentCooldown: 0, status: "READY" as WeaponStatus };
         return { ...w, currentCooldown: next };

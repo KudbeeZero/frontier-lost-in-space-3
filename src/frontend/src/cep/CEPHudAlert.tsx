@@ -24,7 +24,6 @@ export default function CEPHudAlert() {
 
     if (timerRef.current) clearTimeout(timerRef.current);
     timerRef.current = setTimeout(() => setVisible(false), 4500);
-    // biome-ignore lint/correctness/useExhaustiveDependencies: prevLevelRef is a stable ref
   }, [level]);
 
   useEffect(

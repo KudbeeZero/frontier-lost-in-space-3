@@ -81,3 +81,102 @@
     @apply bg-background text-foreground;
   }
 }
+
+/* ── Earth Globe Atmosphere Animations ─────────────────────────────────── */
+@keyframes atmospherePulse {
+  0% {
+    opacity: 0.6;
+    transform: scale(1);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1.04);
+  }
+}
+
+@keyframes driftAurora {
+  0% {
+    transform: translateX(0) rotate(var(--aurora-rotate, 0deg));
+    opacity: 0.4;
+  }
+  100% {
+    transform: translateX(20px) rotate(var(--aurora-rotate, 0deg));
+    opacity: 0.8;
+  }
+}
+
+@keyframes flarePulse {
+  0% {
+    opacity: 0.5;
+    transform: scale(0.9);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1.2);
+  }
+}
+
+/* ── Cockpit Breathing Animation ────────────────────────────────────────── */
+@keyframes cockpitBreathe {
+  0%,
+  100% {
+    transform: translate(0, 0) scale(1);
+  }
+  50% {
+    transform: translate(0, -3px) scale(1.004);
+  }
+}
+
+.cockpit-frame {
+  animation: cockpitBreathe 8s ease-in-out infinite;
+  will-change: transform;
+}
+
+/* ── Hull Critical Flicker Overlay ──────────────────────────────────────── */
+@keyframes hullCriticalFlicker {
+  0%,
+  100% {
+    opacity: 0;
+  }
+  50% {
+    opacity: 0.45;
+  }
+}
+
+.hull-critical-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(255, 34, 0, 0.4);
+  animation: hullCriticalFlicker 0.7s ease-in-out infinite;
+  pointer-events: none;
+  z-index: 200;
+}
+
+/* ── Parallax Depth Layers ─────────────────────────────────────────────── */
+.parallax-bg {
+  transform: translateZ(-10px) scale(1.1);
+}
+
+.parallax-fg {
+  transform: translateZ(5px);
+}
+
+/* ── Wave Reward Panel ─────────────────────────────────────────────────── */
+.wave-reward-panel {
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  background: rgba(0, 5, 22, 0.92);
+  border: 1px solid rgba(0, 180, 220, 0.25);
+  border-radius: 12px;
+  box-shadow: 0 0 24px rgba(0, 180, 220, 0.12);
+}
+
+/* ── Game Over Screen ──────────────────────────────────────────────────── */
+.game-over-screen {
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  background: rgba(0, 5, 22, 0.92);
+  border: 1px solid rgba(255, 34, 0, 0.3);
+  border-radius: 12px;
+  box-shadow: 0 0 24px rgba(255, 34, 0, 0.12);
+}
