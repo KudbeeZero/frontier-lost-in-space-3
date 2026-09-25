@@ -62,8 +62,11 @@ export default function MobileJoystick() {
 
   const onPointerDown = useCallback((e: React.PointerEvent) => {
     e.stopPropagation();
+    e.preventDefault();
     // Capture immediately — this is a small intentional widget, not a tap zone
-    e.currentTarget.setPointerCapture(e.pointerId);
+    if (widgetRef.current) {
+      widgetRef.current.setPointerCapture(e.pointerId);
+    }
     setKnob({ knobDx: 0, knobDy: 0, pointerId: e.pointerId });
     setJoystickInput(0, 0);
 
@@ -83,6 +86,8 @@ export default function MobileJoystick() {
 
   const onPointerMove = useCallback(
     (e: React.PointerEvent) => {
+      e.stopPropagation();
+      e.preventDefault();
       if (!knob || e.pointerId !== knob.pointerId) return;
       const { cx, cy } = getWidgetCenter();
       let dx = e.clientX - cx;
@@ -128,6 +133,8 @@ export default function MobileJoystick() {
 
   const onPointerUp = useCallback(
     (e: React.PointerEvent) => {
+      e.stopPropagation();
+      e.preventDefault();
       if (!knob || e.pointerId !== knob.pointerId) return;
       setKnob(null);
       setJoystickInput(0, 0);
@@ -170,6 +177,48 @@ export default function MobileJoystick() {
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}
       onPointerCancel={onPointerUp}
+      onTouchStart={(e) => {
+        e.stopPropagation();
+        const touch = e.touches[0];
+        if (!touch) return;
+        const synthetic = {
+          pointerId: touch.identifier,
+          clientX: touch.clientX,
+          clientY: touch.clientY,
+          currentTarget: e.currentTarget,
+          stopPropagation: () => e.stopPropagation(),
+          preventDefault: () => e.preventDefault(),
+        } as unknown as React.PointerEvent;
+        onPointerDown(synthetic);
+      }}
+      onTouchMove={(e) => {
+        e.stopPropagation();
+        const touch = e.touches[0];
+        if (!touch) return;
+        const synthetic = {
+          pointerId: touch.identifier,
+          clientX: touch.clientX,
+          clientY: touch.clientY,
+          currentTarget: e.currentTarget,
+          stopPropagation: () => e.stopPropagation(),
+          preventDefault: () => e.preventDefault(),
+        } as unknown as React.PointerEvent;
+        onPointerMove(synthetic);
+      }}
+      onTouchEnd={(e) => {
+        e.stopPropagation();
+        const touch = e.changedTouches[0];
+        if (!touch) return;
+        const synthetic = {
+          pointerId: touch.identifier,
+          clientX: touch.clientX,
+          clientY: touch.clientY,
+          currentTarget: e.currentTarget,
+          stopPropagation: () => e.stopPropagation(),
+          preventDefault: () => e.preventDefault(),
+        } as unknown as React.PointerEvent;
+        onPointerUp(synthetic);
+      }}
       style={
         {
           ...positionStyle,

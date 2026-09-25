@@ -432,6 +432,7 @@ export default function EarthGlobe() {
 
     setGlobeTarget({ id: targetId, lat, lng });
     selectNode(targetId);
+    console.log("[GLOBE] selectedNode set:", targetId);
     if (tutorialActive) setTargetDetected();
 
     interactionBus.emit({

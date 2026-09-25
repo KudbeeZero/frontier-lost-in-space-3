@@ -273,16 +273,16 @@ export default function App() {
           </div>
         )}
 
-        {/* ── GAME MODE — TacticalStage ──────────────────────────────────── */}
-        {/* CinematicIntro + IntroSequence bypassed — START HERE → game direct */}
-        {mode === "game" && (
+        {/* ── GAME / INTRO MODE — TacticalStage ──────────────────────────── */}
+        {/* 'intro' maps directly to game — no cinematic, no story, no popups */}
+        {(mode === "game" || mode === "intro") && (
           <GameRootErrorBoundary>
             <TacticalStage />
           </GameRootErrorBoundary>
         )}
 
         {/* ── CATCH-ALL — unexpected / undefined mode ────────────────────── */}
-        {mode !== "menu" && mode !== "game" && (
+        {mode !== "menu" && mode !== "game" && mode !== "intro" && (
           <UnmatchedModeFallback mode={mode} />
         )}
 

@@ -192,6 +192,7 @@ export default function PortraitStatusBar() {
           onClick={() => toggleScanMode()}
           style={btnStyle(isScanMode, "rgba(0,200,255,0.9)")}
           data-ocid="hud.scan.button"
+          data-tutorial-target="scan-btn"
         >
           SCN
         </button>
@@ -200,6 +201,7 @@ export default function PortraitStatusBar() {
           onClick={() => openPortraitDrawer("command")}
           style={btnStyle(false, "rgba(0,200,255,0.9)")}
           data-ocid="hud.cmd.button"
+          data-tutorial-target="cmd-btn"
         >
           CMD
         </button>

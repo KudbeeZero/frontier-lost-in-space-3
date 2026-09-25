@@ -30,8 +30,8 @@ import { useEnemyStore } from "./combat/useEnemyStore";
 import { useHullStore } from "./combat/useHullStore";
 import { usePlayerStore } from "./combat/usePlayerStore";
 import { useWeaponsStore } from "./combat/useWeapons";
+import { playAmbientLoop } from "./combat/weaponSynth";
 import { HostileContactCinematic } from "./components/cinematics/HostileContactCinematic";
-import InteractionDebugShell from "./components/debug/InteractionDebugShell";
 import CEPStatusPanel from "./components/game/CEPStatusPanel";
 import CameraController from "./components/game/CameraController";
 import CockpitAmbientFx from "./components/game/CockpitAmbientFx";
@@ -54,11 +54,9 @@ import RadarSystem from "./components/game/RadarSystem";
 import ShipMotionLayer from "./components/game/ShipMotionLayer";
 import SpaceBackground from "./components/game/SpaceBackground";
 import TacticalLogPanel from "./components/game/TacticalLogPanel";
-import ThreatManager from "./components/game/ThreatManager";
 import TutorialOverlay from "./components/game/TutorialOverlay";
 import UpperCanopy from "./components/game/UpperCanopy";
 import VelocityIndicator from "./components/game/VelocityIndicator";
-import WaveRewardScreen from "./components/game/WaveRewardScreen";
 import { XpHudBar } from "./components/game/XpHudBar";
 import { useIsLandscape } from "./hooks/useIsLandscape";
 import { useTacticalStore } from "./hooks/useTacticalStore";
@@ -66,8 +64,6 @@ import { runInteractionAssertions } from "./interaction/interactionAssertions";
 import { useIntroStore } from "./intro/useIntroStore";
 import { useShipMovementSetup } from "./motion/useShipMovementSetup";
 import { globalNavMode } from "./navigation/NavigationModeController";
-import { useStageStore } from "./stages/useStageStore";
-import { useWaveStore } from "./stages/useWaveStore";
 import { useGameState } from "./state/useGameState";
 import {
   aegisHullCritical,
@@ -175,6 +171,12 @@ function GameBootstrap() {
       "game init — targeting always active",
     );
     console.log("[NAV-MODE] Session initialized — forced to tacticalLock");
+
+    // Start ambient cockpit audio loop
+    const stopAmbient = playAmbientLoop();
+    return () => {
+      stopAmbient();
+    };
   }, []);
   return null;
 }
@@ -394,31 +396,20 @@ function TacticalStageInner() {
 
   // ── Game Over state ──
   const isGameOver = useHullStore((s) => s.isGameOver);
-  const waveNumber = useWaveStore((s) => s.waveNumber);
   const totalKills = useXpStore((s) => s.totalKills);
   const setMode = useGameState((s) => s.setMode);
 
-  // ── Wave reward state ──
-  const isShowingWaveReward = useWaveStore((s) => s.isShowingWaveReward);
-  const waveCleared = useWaveStore((s) => s.waveCleared);
-
-  // Auto-show wave reward after wave cleared
-  useEffect(() => {
-    if (waveCleared && !isShowingWaveReward) {
-      const t = setTimeout(() => {
-        useWaveStore.getState().showWaveReward();
-      }, 1500);
-      return () => clearTimeout(t);
-    }
-  }, [waveCleared, isShowingWaveReward]);
-
   const handlePlayAgain = () => {
     useHullStore.getState().resetGame();
-    useWaveStore.getState().resetWave();
     useCreditsStore.getState().resetCredits();
     useXpStore.getState().reset();
     setMode("menu");
   };
+
+  useEffect(() => {
+    useTacticalStore.getState().setInGameMode(true);
+    return () => useTacticalStore.getState().setInGameMode(false);
+  }, []);
 
   useEffect(() => {
     bootTrace("TacticalStage mounted");
@@ -459,13 +450,6 @@ function TacticalStageInner() {
     sceneReadyRef.current = true;
     setSceneReady(true);
   };
-
-  useEffect(() => {
-    const t = setTimeout(() => {
-      useEnemyStore.getState().triggerSessionCinematic();
-    }, 2000);
-    return () => clearTimeout(t);
-  }, []);
 
   return (
     <div
@@ -536,11 +520,26 @@ function TacticalStageInner() {
         <GlobeErrorBoundary>
           <Canvas
             data-layer="globe-canvas"
-            style={{ position: "absolute", inset: 0, zIndex: 1 }}
+            style={{
+              position: "absolute",
+              inset: 0,
+              zIndex: 1,
+              pointerEvents: "auto",
+            }}
             camera={{ fov: 55, near: 0.1, far: 200, position: [0, 0.9, 5] }}
             gl={{ antialias: true, alpha: true }}
             dpr={DPR}
             onCreated={(state) => {
+              // Tag the canvas so QA selectors can find it reliably
+              state.gl.domElement.setAttribute("data-testid", "globe-canvas");
+              // Mark WebGL as ready for QA tests (avoids double-context browser restriction)
+              state.gl.domElement.setAttribute("data-webgl-ready", "true");
+              state.gl.domElement.setAttribute("data-layer", "globe-canvas");
+              // CRITICAL: set pointer-events on the actual canvas DOM element
+              // R3F overwrites the canvas style with pointer-events:none by default.
+              // The wrapper div style prop sets it on the wrapper, NOT the canvas.
+              // Only onCreated reliably sets attributes on the real canvas element.
+              state.gl.domElement.style.pointerEvents = "auto";
               console.log("[Canvas] WebGL context created ✔");
               console.log(
                 "[Canvas] Size:",
@@ -553,7 +552,6 @@ function TacticalStageInner() {
             <CameraController />
             <SpaceBackground />
             <EarthGlobe />
-            <ThreatManager />
             <EnemyTargetsLayer />
             <IncomingFireLayer />
             <CombatEffectsLayer />
@@ -677,38 +675,9 @@ function TacticalStageInner() {
       <GameOverScreen
         isVisible={isGameOver}
         finalScore={totalKills * 100}
-        waveReached={waveNumber}
+        waveReached={0}
         totalKills={totalKills}
         onPlayAgain={handlePlayAgain}
-      />
-
-      {/* ── WAVE REWARD SCREEN ── */}
-      <WaveRewardScreen
-        isVisible={isShowingWaveReward}
-        waveNumber={waveNumber}
-        creditsEarned={totalKills * 10}
-        onHullRepair={() => {
-          const store = useCreditsStore.getState();
-          if (store.spendCredits(50)) {
-            useHullStore.getState().repairHull(50);
-          }
-        }}
-        onWeaponUpgrade={() => {
-          const store = useCreditsStore.getState();
-          if (store.spendCredits(75)) {
-            // Weapon upgrade: stored in local ref for enemy health multiplier
-            // For now, just spend credits; multiplier applied in threat store
-          }
-        }}
-        onShieldRecharge={() => {
-          const store = useCreditsStore.getState();
-          if (store.spendCredits(40)) {
-            useHullStore.getState().repairHull(25);
-          }
-        }}
-        onContinue={() => {
-          useWaveStore.getState().dismissWaveReward();
-        }}
       />
 
       <DiagnosticsTrigger onOpen={() => setDiagOpen((v) => !v)} />
@@ -766,7 +735,6 @@ function TacticalStageInner() {
       )}
 
       <InputLayerDebug />
-      <InteractionDebugShell />
       <CoreLoopDebug />
 
       <style>{`

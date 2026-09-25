@@ -24,7 +24,7 @@ export default function ThreatManager() {
   // Auto-spawn threats
   useEffect(() => {
     // Spawn first threat after a short delay
-    const initial = setTimeout(spawnThreat, 4000);
+    const initial = setTimeout(spawnThreat, 1500);
 
     function scheduleNext() {
       const delay = 12000 + Math.random() * 6000;

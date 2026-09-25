@@ -72,7 +72,7 @@ export default function PortraitCommandDrawer() {
   };
 
   return (
-    <>
+    <div style={{ pointerEvents: portraitDrawerOpen ? "auto" : "none" }}>
       {portraitDrawerOpen && (
         <div
           role="button"
@@ -203,6 +203,6 @@ export default function PortraitCommandDrawer() {
           <TabContent tab={portraitDrawerTab} />
         </div>
       </div>
-    </>
+    </div>
   );
 }

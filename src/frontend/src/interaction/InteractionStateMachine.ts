@@ -137,6 +137,17 @@ export class InteractionFSM {
 
     console.log(`[FSM] ${from} → ${to}: ${reason}`);
 
+    // [AUDIO] Lock click on target lock
+    if (to === InteractionState.targetLocked) {
+      try {
+        import("../combat/weaponSynth").then((m) => {
+          if (m.playLockClick) m.playLockClick();
+        });
+      } catch (_) {
+        /* ignore */
+      }
+    }
+
     for (const listener of this._stateChangeListeners) {
       try {
         listener(to);

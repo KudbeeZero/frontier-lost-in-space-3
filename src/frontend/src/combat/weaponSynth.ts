@@ -199,7 +199,60 @@ export function playDischargeBurst(weaponType: string): void {
   }
 }
 
-// ─── WEAPON FIRE SOUNDS ────────────────────────────────────────────────────────
+/**
+ * playAmbientLoop — continuous low 55Hz sine hum for cockpit ambience.
+ * Returns a cleanup function to stop the loop.
+ */
+export function playAmbientLoop(): () => void {
+  try {
+    const ctx = getCtx();
+    if (!ctx) return () => {};
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = "sine";
+    osc.frequency.value = 55;
+    gain.gain.value = 0.02;
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.start();
+    return () => {
+      try {
+        osc.stop();
+        ctx.close();
+      } catch (_e) {
+        /* ignore */
+      }
+    };
+  } catch (_e) {
+    return () => {};
+  }
+}
+
+/**
+ * playWarning — three rapid square-wave beeps at 880Hz.
+ * Used when threat escalates to IMPACT_RISK or PRIORITY_TARGET.
+ */
+export function playWarning(): void {
+  try {
+    const ctx = getCtx();
+    if (!ctx) return;
+    const times = [0, 0.25, 0.5];
+    for (const t of times) {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = "square";
+      osc.frequency.value = 880;
+      gain.gain.setValueAtTime(0.15, ctx.currentTime + t);
+      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + t + 0.18);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start(ctx.currentTime + t);
+      osc.stop(ctx.currentTime + t + 0.18);
+    }
+  } catch (_e) {
+    /* ignore */
+  }
+}
 
 /**
  * playFire — distinct synthesized launch sound per weapon type.

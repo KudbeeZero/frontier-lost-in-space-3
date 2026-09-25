@@ -4,6 +4,7 @@ import { useWaveStore } from "@/stages/useWaveStore";
 import { useXpStore } from "@/xp/useXpStore";
 import { create } from "zustand";
 import { useTutorialStore } from "../tutorial/useTutorialStore";
+import { playWarning } from "./weaponSynth";
 
 export type ThreatStatus =
   | "INCOMING"
@@ -30,6 +31,7 @@ export interface AsteroidThreat {
 interface ThreatStore {
   threats: AsteroidThreat[];
   lastPlayerHitAt: number;
+  warnedThreatIds: Set<string>;
   spawnThreat: () => void;
   updateThreats: (dt: number) => void;
   interceptThreat: (
@@ -53,6 +55,7 @@ const WEAPON_DAMAGE: Record<"pulse" | "railgun" | "emp", number> = {
 export const useThreatStore = create<ThreatStore>((set, get) => ({
   threats: [],
   lastPlayerHitAt: 0,
+  warnedThreatIds: new Set<string>(),
 
   spawnThreat: () => {
     const { threats } = get();
@@ -90,6 +93,9 @@ export const useThreatStore = create<ThreatStore>((set, get) => ({
   },
 
   updateThreats: (dt: number) => {
+    const warnedIds = get().warnedThreatIds;
+    const newWarnedIds = new Set(warnedIds);
+
     set((state) => ({
       threats: state.threats.map((t) => {
         if (t.status === "DESTROYED" || t.status === "SURVIVED") return t;
@@ -107,8 +113,23 @@ export const useThreatStore = create<ThreatStore>((set, get) => ({
           newStatus = "PRIORITY_TARGET";
         }
 
+        // [AUDIO] Warning beep once per threat when escalating to IMPACT_RISK or PRIORITY_TARGET
+        if (
+          (newStatus === "IMPACT_RISK" || newStatus === "PRIORITY_TARGET") &&
+          t.status !== newStatus &&
+          !warnedIds.has(t.id)
+        ) {
+          newWarnedIds.add(t.id);
+          try {
+            playWarning();
+          } catch (_) {
+            /* ignore */
+          }
+        }
+
         return { ...t, progress: newProgress, status: newStatus };
       }),
+      warnedThreatIds: newWarnedIds,
     }));
   },
 

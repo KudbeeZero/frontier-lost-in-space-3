@@ -14,6 +14,7 @@ import * as THREE from "three";
 import { getSway } from "../../motion/shipMotionEngine";
 
 const IS_NARROW = typeof window !== "undefined" && window.innerWidth < 480;
+const IS_MOBILE = typeof window !== "undefined" && window.innerWidth < 768;
 
 function spherePositions(count: number, rMin: number, rMax: number) {
   const arr = new Float32Array(count * 3);
@@ -419,7 +420,7 @@ function DustParticles() {
 
 export default function SpaceBackground() {
   // Star counts scaled down on narrow/mobile screens
-  const c = IS_NARROW ? 0.5 : 1;
+  const c = IS_NARROW ? 0.35 : IS_MOBILE ? 0.55 : 1;
   return (
     <>
       <StarLayer

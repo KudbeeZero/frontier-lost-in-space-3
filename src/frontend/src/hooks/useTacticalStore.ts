@@ -33,6 +33,7 @@ interface TacticalState {
   phase: "idle" | "combat" | "briefing";
   globeTarget: GlobeTarget | null;
   nodeData: NodeData | null;
+  inGameMode: boolean;
 
   selectNode: (id: string | null) => void;
   clearNode: () => void;
@@ -42,6 +43,7 @@ interface TacticalState {
   pushEventLog: (entry: Omit<EventLogEntry, "ts" | "id">) => void;
   setGlobeTarget: (target: GlobeTarget | null) => void;
   setNodeData: (data: NodeData | null) => void;
+  setInGameMode: (value: boolean) => void;
 }
 
 export const useTacticalStore = create<TacticalState>((set) => ({
@@ -51,6 +53,7 @@ export const useTacticalStore = create<TacticalState>((set) => ({
   phase: "idle",
   globeTarget: null,
   nodeData: null,
+  inGameMode: false,
 
   selectNode: (id) => set({ selectedNode: id }),
   clearNode: () =>
@@ -71,4 +74,5 @@ export const useTacticalStore = create<TacticalState>((set) => ({
     })),
   setGlobeTarget: (target) => set({ globeTarget: target }),
   setNodeData: (data) => set({ nodeData: data }),
+  setInGameMode: (value) => set({ inGameMode: value }),
 }));

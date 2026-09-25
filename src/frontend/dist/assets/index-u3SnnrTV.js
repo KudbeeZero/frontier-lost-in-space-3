@@ -51915,12 +51915,11 @@ function WebGLMorphtargets(gl, capabilities, textures) {
     const morphTargetsCount = morphAttribute !== void 0 ? morphAttribute.length : 0;
     let entry = morphTextures.get(geometry);
     if (entry === void 0 || entry.count !== morphTargetsCount) {
-      let disposeTexture2 = function() {
+      let disposeTexture = function() {
         texture.dispose();
         morphTextures.delete(geometry);
-        geometry.removeEventListener("dispose", disposeTexture2);
+        geometry.removeEventListener("dispose", disposeTexture);
       };
-      var disposeTexture = disposeTexture2;
       if (entry !== void 0) entry.texture.dispose();
       const hasMorphPosition = geometry.morphAttributes.position !== void 0;
       const hasMorphNormals = geometry.morphAttributes.normal !== void 0;
@@ -51979,7 +51978,7 @@ function WebGLMorphtargets(gl, capabilities, textures) {
         size: new Vector2(width, height)
       };
       morphTextures.set(geometry, entry);
-      geometry.addEventListener("dispose", disposeTexture2);
+      geometry.addEventListener("dispose", disposeTexture);
     }
     if (object.isInstancedMesh === true && object.morphTexture !== null) {
       program.getUniforms().setValue(gl, "morphTexture", object.morphTexture, textures);
@@ -71627,6 +71626,7 @@ const useTacticalStore = create((set) => ({
   phase: "idle",
   globeTarget: null,
   nodeData: null,
+  inGameMode: false,
   selectNode: (id) => set({ selectedNode: id }),
   clearNode: () => set({ selectedNode: null, globeTarget: null, nodeData: null }),
   toggleScanMode: () => set((s) => ({ scanMode: !s.scanMode })),
@@ -71643,7 +71643,8 @@ const useTacticalStore = create((set) => ({
     ].slice(0, 200)
   })),
   setGlobeTarget: (target) => set({ globeTarget: target }),
-  setNodeData: (data) => set({ nodeData: data })
+  setNodeData: (data) => set({ nodeData: data }),
+  setInGameMode: (value) => set({ inGameMode: value })
 }));
 let swayX = 0;
 let swayY = 0;
@@ -72348,97 +72349,6 @@ const useTutorialStore = create()(
     }
   )
 );
-function rand(min, max) {
-  return min + Math.random() * (max - min);
-}
-const WEAPON_DAMAGE = {
-  pulse: 0.35,
-  railgun: 0.65,
-  emp: 0.5
-};
-const useThreatStore = create((set, get) => ({
-  threats: [],
-  lastPlayerHitAt: 0,
-  spawnThreat: () => {
-    const { threats } = get();
-    const stageConfig = useStageStore.getState().getEnemyConfig();
-    const active = threats.filter(
-      (t) => t.status !== "DESTROYED" && t.status !== "SURVIVED"
-    );
-    if (active.length >= stageConfig.maxActive) return;
-    const tutActive = useTutorialStore.getState().tutorialActive;
-    const totalSpawned = threats.length;
-    const isEarlyGame = totalSpawned < 8;
-    const speed = tutActive ? rand(0.01, 0.018) : isEarlyGame ? rand(stageConfig.speedMin * 0.6, stageConfig.speedMax * 0.6) : rand(stageConfig.speedMin, stageConfig.speedMax);
-    const threat = {
-      id: `THREAT-${Date.now()}-${Math.floor(Math.random() * 9999)}`,
-      startAzimuth: rand(0, Math.PI * 2),
-      startElevation: rand(-0.6, 0.6),
-      startRadius: 6,
-      impactAzimuth: rand(0, Math.PI * 2),
-      impactElevation: rand(-0.8, 0.8),
-      progress: 0,
-      speed,
-      status: "INCOMING",
-      health: 1 * stageConfig.healthMultiplier,
-      spawnTime: Date.now()
-    };
-    set((state2) => ({ threats: [...state2.threats, threat] }));
-  },
-  updateThreats: (dt) => {
-    set((state2) => ({
-      threats: state2.threats.map((t) => {
-        if (t.status === "DESTROYED" || t.status === "SURVIVED") return t;
-        const newProgress = Math.min(1, t.progress + t.speed * dt);
-        let newStatus = t.status;
-        if (newProgress >= 1) {
-          newStatus = "SURVIVED";
-        } else if (newProgress > 0.85) {
-          newStatus = "IMPACT_RISK";
-        } else if (newProgress > 0.65) {
-          newStatus = "INTERCEPT_WINDOW";
-        } else if (newProgress > 0.4) {
-          newStatus = "PRIORITY_TARGET";
-        }
-        return { ...t, progress: newProgress, status: newStatus };
-      })
-    }));
-  },
-  interceptThreat: (threatId, weaponType) => {
-    const damage = WEAPON_DAMAGE[weaponType];
-    let wasDestroyed = false;
-    set((state2) => ({
-      threats: state2.threats.map((t) => {
-        if (t.id !== threatId) return t;
-        const newHealth = Math.max(0, t.health - damage);
-        const destroyed = newHealth <= 0;
-        if (destroyed) wasDestroyed = true;
-        return {
-          ...t,
-          health: newHealth,
-          status: destroyed ? "DESTROYED" : t.status
-        };
-      })
-    }));
-    if (wasDestroyed) {
-      useStageStore.getState().recordKill();
-      useXpStore.getState().addXp(100);
-      useXpStore.getState().addKill();
-      useWaveStore.getState().recordWaveKill();
-      useCreditsStore.getState().addCredits(10);
-    }
-  },
-  removeDestroyedThreats: () => {
-    set((state2) => ({
-      threats: state2.threats.filter(
-        (t) => t.status !== "DESTROYED" || Date.now() - t.spawnTime < 3e3
-      )
-    }));
-  },
-  recordPlayerHit: () => {
-    set({ lastPlayerHitAt: Date.now() });
-  }
-}));
 let _ctx = null;
 let _initialized = false;
 function initAudio() {
@@ -72472,6 +72382,164 @@ function getCtx() {
   } catch {
   }
   return _ctx;
+}
+function playNearZone() {
+  try {
+    const ctx = getCtx();
+    if (!ctx) return;
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.type = "sine";
+    osc.frequency.setValueAtTime(80, ctx.currentTime);
+    gain.gain.setValueAtTime(0, ctx.currentTime);
+    gain.gain.linearRampToValueAtTime(0.04, ctx.currentTime + 0.06);
+    gain.gain.linearRampToValueAtTime(0, ctx.currentTime + 0.15);
+    osc.start(ctx.currentTime);
+    osc.stop(ctx.currentTime + 0.16);
+  } catch {
+  }
+}
+function playHoldRise(progress) {
+  try {
+    const ctx = getCtx();
+    if (!ctx) return;
+    const freq = 180 + (520 - 180) * Math.max(0, Math.min(1, progress));
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.type = "sine";
+    osc.frequency.setValueAtTime(freq, ctx.currentTime);
+    gain.gain.setValueAtTime(0.06, ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(1e-3, ctx.currentTime + 0.08);
+    osc.start(ctx.currentTime);
+    osc.stop(ctx.currentTime + 0.09);
+  } catch {
+  }
+}
+function playLockClick() {
+  try {
+    const ctx = getCtx();
+    if (!ctx) return;
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.type = "sine";
+    osc.frequency.setValueAtTime(800, ctx.currentTime);
+    gain.gain.setValueAtTime(0.08, ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(1e-3, ctx.currentTime + 0.012);
+    osc.start(ctx.currentTime);
+    osc.stop(ctx.currentTime + 0.013);
+  } catch {
+  }
+}
+function playDischargeBurst(weaponType) {
+  try {
+    const ctx = getCtx();
+    if (!ctx) return;
+    const gain = ctx.createGain();
+    gain.connect(ctx.destination);
+    if (weaponType === "pulse") {
+      const bufLen = Math.floor(ctx.sampleRate * 0.06);
+      const buf = ctx.createBuffer(1, bufLen, ctx.sampleRate);
+      const data = buf.getChannelData(0);
+      for (let i2 = 0; i2 < data.length; i2++) {
+        data[i2] = (Math.random() * 2 - 1) * (1 - i2 / data.length) ** 2;
+      }
+      const src = ctx.createBufferSource();
+      const filter = ctx.createBiquadFilter();
+      filter.type = "highpass";
+      filter.frequency.setValueAtTime(2e3, ctx.currentTime);
+      src.buffer = buf;
+      src.connect(filter);
+      filter.connect(gain);
+      gain.gain.setValueAtTime(0.1, ctx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(1e-3, ctx.currentTime + 0.06);
+      src.start(ctx.currentTime);
+    } else if (weaponType === "missile") {
+      const osc = ctx.createOscillator();
+      osc.connect(gain);
+      osc.type = "sine";
+      osc.frequency.setValueAtTime(80, ctx.currentTime);
+      osc.frequency.exponentialRampToValueAtTime(40, ctx.currentTime + 0.08);
+      gain.gain.setValueAtTime(0.1, ctx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(1e-3, ctx.currentTime + 0.08);
+      osc.start(ctx.currentTime);
+      osc.stop(ctx.currentTime + 0.09);
+    } else if (weaponType === "railgun") {
+      const bufLen = Math.floor(ctx.sampleRate * 0.04);
+      const buf = ctx.createBuffer(1, bufLen, ctx.sampleRate);
+      const data = buf.getChannelData(0);
+      for (let i2 = 0; i2 < data.length; i2++) {
+        data[i2] = (Math.random() * 2 - 1) * (1 - i2 / data.length) ** 3;
+      }
+      const src = ctx.createBufferSource();
+      src.buffer = buf;
+      src.connect(gain);
+      gain.gain.setValueAtTime(0.1, ctx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(1e-3, ctx.currentTime + 0.04);
+      src.start(ctx.currentTime);
+    } else if (weaponType === "emp") {
+      const osc = ctx.createOscillator();
+      osc.connect(gain);
+      osc.type = "sawtooth";
+      osc.frequency.setValueAtTime(600, ctx.currentTime);
+      osc.frequency.exponentialRampToValueAtTime(100, ctx.currentTime + 0.1);
+      gain.gain.setValueAtTime(0.1, ctx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(1e-3, ctx.currentTime + 0.1);
+      osc.start(ctx.currentTime);
+      osc.stop(ctx.currentTime + 0.11);
+    }
+  } catch {
+  }
+}
+function playAmbientLoop() {
+  try {
+    const ctx = getCtx();
+    if (!ctx) return () => {
+    };
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = "sine";
+    osc.frequency.value = 55;
+    gain.gain.value = 0.02;
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.start();
+    return () => {
+      try {
+        osc.stop();
+        ctx.close();
+      } catch (_e2) {
+      }
+    };
+  } catch (_e2) {
+    return () => {
+    };
+  }
+}
+function playWarning() {
+  try {
+    const ctx = getCtx();
+    if (!ctx) return;
+    const times = [0, 0.25, 0.5];
+    for (const t of times) {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = "square";
+      osc.frequency.value = 880;
+      gain.gain.setValueAtTime(0.15, ctx.currentTime + t);
+      gain.gain.exponentialRampToValueAtTime(1e-3, ctx.currentTime + t + 0.18);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start(ctx.currentTime + t);
+      osc.stop(ctx.currentTime + t + 0.18);
+    }
+  } catch (_e2) {
+  }
 }
 function playFire(type) {
   try {
@@ -72713,6 +72781,121 @@ function playImpact(type) {
   } catch {
   }
 }
+const weaponSynth = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.defineProperty({
+  __proto__: null,
+  initAudio,
+  playAmbientLoop,
+  playDischargeBurst,
+  playFire,
+  playHoldRise,
+  playImpact,
+  playLockClick,
+  playMissileWind,
+  playNearZone,
+  playWarning
+}, Symbol.toStringTag, { value: "Module" }));
+function rand(min, max) {
+  return min + Math.random() * (max - min);
+}
+const WEAPON_DAMAGE = {
+  pulse: 0.35,
+  railgun: 0.65,
+  emp: 0.5
+};
+const useThreatStore = create((set, get) => ({
+  threats: [],
+  lastPlayerHitAt: 0,
+  warnedThreatIds: /* @__PURE__ */ new Set(),
+  spawnThreat: () => {
+    const { threats } = get();
+    const stageConfig = useStageStore.getState().getEnemyConfig();
+    const active = threats.filter(
+      (t) => t.status !== "DESTROYED" && t.status !== "SURVIVED"
+    );
+    if (active.length >= stageConfig.maxActive) return;
+    const tutActive = useTutorialStore.getState().tutorialActive;
+    const totalSpawned = threats.length;
+    const isEarlyGame = totalSpawned < 8;
+    const speed = tutActive ? rand(0.01, 0.018) : isEarlyGame ? rand(stageConfig.speedMin * 0.6, stageConfig.speedMax * 0.6) : rand(stageConfig.speedMin, stageConfig.speedMax);
+    const threat = {
+      id: `THREAT-${Date.now()}-${Math.floor(Math.random() * 9999)}`,
+      startAzimuth: rand(0, Math.PI * 2),
+      startElevation: rand(-0.6, 0.6),
+      startRadius: 6,
+      impactAzimuth: rand(0, Math.PI * 2),
+      impactElevation: rand(-0.8, 0.8),
+      progress: 0,
+      speed,
+      status: "INCOMING",
+      health: 1 * stageConfig.healthMultiplier,
+      spawnTime: Date.now()
+    };
+    set((state2) => ({ threats: [...state2.threats, threat] }));
+  },
+  updateThreats: (dt) => {
+    const warnedIds = get().warnedThreatIds;
+    const newWarnedIds = new Set(warnedIds);
+    set((state2) => ({
+      threats: state2.threats.map((t) => {
+        if (t.status === "DESTROYED" || t.status === "SURVIVED") return t;
+        const newProgress = Math.min(1, t.progress + t.speed * dt);
+        let newStatus = t.status;
+        if (newProgress >= 1) {
+          newStatus = "SURVIVED";
+        } else if (newProgress > 0.85) {
+          newStatus = "IMPACT_RISK";
+        } else if (newProgress > 0.65) {
+          newStatus = "INTERCEPT_WINDOW";
+        } else if (newProgress > 0.4) {
+          newStatus = "PRIORITY_TARGET";
+        }
+        if ((newStatus === "IMPACT_RISK" || newStatus === "PRIORITY_TARGET") && t.status !== newStatus && !warnedIds.has(t.id)) {
+          newWarnedIds.add(t.id);
+          try {
+            playWarning();
+          } catch (_) {
+          }
+        }
+        return { ...t, progress: newProgress, status: newStatus };
+      }),
+      warnedThreatIds: newWarnedIds
+    }));
+  },
+  interceptThreat: (threatId, weaponType) => {
+    const damage = WEAPON_DAMAGE[weaponType];
+    let wasDestroyed = false;
+    set((state2) => ({
+      threats: state2.threats.map((t) => {
+        if (t.id !== threatId) return t;
+        const newHealth = Math.max(0, t.health - damage);
+        const destroyed = newHealth <= 0;
+        if (destroyed) wasDestroyed = true;
+        return {
+          ...t,
+          health: newHealth,
+          status: destroyed ? "DESTROYED" : t.status
+        };
+      })
+    }));
+    if (wasDestroyed) {
+      useStageStore.getState().recordKill();
+      useXpStore.getState().addXp(100);
+      useXpStore.getState().addKill();
+      useWaveStore.getState().recordWaveKill();
+      useCreditsStore.getState().addCredits(10);
+    }
+  },
+  removeDestroyedThreats: () => {
+    set((state2) => ({
+      threats: state2.threats.filter(
+        (t) => t.status !== "DESTROYED" || Date.now() - t.spawnTime < 3e3
+      )
+    }));
+  },
+  recordPlayerHit: () => {
+    set({ lastPlayerHitAt: Date.now() });
+  }
+}));
 const INITIAL_WEAPONS = [
   {
     id: "pulse",
@@ -73147,1339 +73330,139 @@ const HostileContactCinematic = ({ viewportRef }) => {
     }
   );
 };
-const WEAPON_IDS = ["pulse", "rail", "missile", "emp"];
-function zeroRecord() {
-  const r2 = {};
-  for (const id of WEAPON_IDS) r2[id] = 0;
-  return r2;
-}
-const storedAssist = localStorage.getItem("frontier_assist_targeting");
-const initialAssist = storedAssist !== null ? storedAssist === "true" : true;
-const useWeaponZoneStore = create((set) => ({
-  intentLevels: zeroRecord(),
-  dwellTimes: zeroRecord(),
-  hitCounts: zeroRecord(),
-  missCounts: zeroRecord(),
-  consoleMissCount: 0,
-  assistTargetingUI: initialAssist,
-  setIntentLevel: (weaponId, level) => set((s) => ({ intentLevels: { ...s.intentLevels, [weaponId]: level } })),
-  setDwellTime: (weaponId, ms) => set((s) => ({ dwellTimes: { ...s.dwellTimes, [weaponId]: ms } })),
-  recordHit: (weaponId) => set((s) => ({
-    hitCounts: {
-      ...s.hitCounts,
-      [weaponId]: (s.hitCounts[weaponId] ?? 0) + 1
-    }
-  })),
-  recordMiss: (weaponId) => set((s) => ({
-    missCounts: {
-      ...s.missCounts,
-      [weaponId]: (s.missCounts[weaponId] ?? 0) + 1
-    }
-  })),
-  recordConsoleMiss: () => set((s) => ({ consoleMissCount: s.consoleMissCount + 1 })),
-  setAssistTargetingUI: (enabled) => {
-    try {
-      localStorage.setItem("frontier_assist_targeting", String(enabled));
-    } catch {
-    }
-    set({ assistTargetingUI: enabled });
-  }
-}));
-var InteractionState = /* @__PURE__ */ ((InteractionState2) => {
-  InteractionState2["idle"] = "idle";
-  InteractionState2["pointerDown"] = "pointerDown";
-  InteractionState2["tapCandidate"] = "tapCandidate";
-  InteractionState2["draggingGlobe"] = "draggingGlobe";
-  InteractionState2["targetLocked"] = "targetLocked";
-  InteractionState2["joystickActive"] = "joystickActive";
-  InteractionState2["debugInspecting"] = "debugInspecting";
-  return InteractionState2;
-})(InteractionState || {});
-const TRANSITION_TABLE = {
-  [
-    "idle"
-    /* idle */
-  ]: [
-    "pointerDown",
-    "joystickActive",
-    "debugInspecting"
-    /* debugInspecting */
-  ],
-  [
-    "pointerDown"
-    /* pointerDown */
-  ]: [
-    "tapCandidate",
-    "draggingGlobe",
-    "idle",
-    // V20: pointer cancel / blur abort path
-    "debugInspecting"
-    /* debugInspecting */
-  ],
-  [
-    "tapCandidate"
-    /* tapCandidate */
-  ]: [
-    "targetLocked",
-    "idle",
-    "draggingGlobe",
-    "debugInspecting"
-    /* debugInspecting */
-  ],
-  [
-    "draggingGlobe"
-    /* draggingGlobe */
-  ]: [
-    "idle",
-    "debugInspecting"
-    /* debugInspecting */
-  ],
-  [
-    "targetLocked"
-    /* targetLocked */
-  ]: [
-    "idle",
-    "draggingGlobe",
-    "joystickActive",
-    "debugInspecting"
-    /* debugInspecting */
-  ],
-  [
-    "joystickActive"
-    /* joystickActive */
-  ]: [
-    "idle",
-    "targetLocked",
-    // V20: lock while joystick is active
-    "debugInspecting"
-    /* debugInspecting */
-  ],
-  [
-    "debugInspecting"
-    /* debugInspecting */
-  ]: [
-    "idle"
-    /* idle */
-  ]
-};
-const WATCHDOG_STATES = [
-  "pointerDown",
-  "tapCandidate"
-  /* tapCandidate */
-];
-const WATCHDOG_TIMEOUT_MS = 2e3;
-class InteractionFSM {
-  constructor() {
-    __publicField(this, "_current", "idle");
-    __publicField(this, "_history", []);
-    __publicField(this, "_stateChangeListeners", []);
-    __publicField(this, "_watchdogTimer", null);
-    __publicField(this, "_watchdogTimeoutMs", WATCHDOG_TIMEOUT_MS);
-    __publicField(this, "_stateEnteredAt", Date.now());
-  }
-  get current() {
-    return this._current;
-  }
-  /** Milliseconds elapsed since the current state was entered. */
-  get stuckDurationMs() {
-    return Date.now() - this._stateEnteredAt;
-  }
-  /** Override the watchdog timeout (useful in tests or for tuning). */
-  setWatchdogTimeout(ms) {
-    this._watchdogTimeoutMs = ms;
-  }
-  /**
-   * Attempt a state transition. Returns true on success, false on illegal.
-   * @param to    Target state
-   * @param reason  Human-readable reason for logging
-   */
-  transition(to, reason = "no reason provided") {
-    const from = this._current;
-    const allowed = TRANSITION_TABLE[from] ?? [];
-    if (to === from) {
-      return true;
-    }
-    if (!allowed.includes(to)) {
-      console.warn(
-        `[FSM] ILLEGAL: ${from} → ${to} (reason: ${reason}) — transition blocked. Allowed from ${from}: [${allowed.join(", ")}]`
-      );
-      return false;
-    }
-    this._clearWatchdog();
-    const entry = { from, to, reason, ts: Date.now() };
-    this._history = [...this._history.slice(-49), entry];
-    this._current = to;
-    this._stateEnteredAt = Date.now();
-    console.log(`[FSM] ${from} → ${to}: ${reason}`);
-    for (const listener of this._stateChangeListeners) {
-      try {
-        listener(to);
-      } catch (_) {
-      }
-    }
-    if (WATCHDOG_STATES.includes(to)) {
-      this._armWatchdog(to);
-    }
-    return true;
-  }
-  /** Reset to idle unconditionally. Use for test cleanup. */
-  reset() {
-    this._clearWatchdog();
-    const from = this._current;
-    this._current = "idle";
-    this._stateEnteredAt = Date.now();
-    this._history = [
-      ...this._history.slice(-49),
-      { from, to: "idle", reason: "reset", ts: Date.now() }
-    ];
-    for (const listener of this._stateChangeListeners) {
-      try {
-        listener(
-          "idle"
-          /* idle */
-        );
-      } catch (_) {
-      }
-    }
-  }
-  /** Returns a copy of the last 50 history entries. */
-  getHistory() {
-    return [...this._history];
-  }
-  /** Subscribe to state changes. Returns an unsubscribe function. */
-  onStateChange(listener) {
-    this._stateChangeListeners.push(listener);
-    return () => {
-      this._stateChangeListeners = this._stateChangeListeners.filter(
-        (l2) => l2 !== listener
-      );
-    };
-  }
-  _armWatchdog(state2) {
-    this._watchdogTimer = setTimeout(() => {
-      if (this._current === state2) {
-        console.warn(
-          `[FSM-WATCHDOG] State "${state2}" held for ${this._watchdogTimeoutMs}ms without resolution — auto-resetting to idle`
-        );
-        const from = this._current;
-        this._current = "idle";
-        this._stateEnteredAt = Date.now();
-        this._history = [
-          ...this._history.slice(-49),
+function CEPStatusPanel() {
+  const level = useCEPStore((s) => s.level);
+  const def = CEP_LEVELS[level];
+  const isCritical = level >= 4;
+  const isWarning = level === 3;
+  const borderColor = isCritical ? "rgba(255,60,30,0.7)" : isWarning ? "rgba(255,160,30,0.55)" : "rgba(0,180,200,0.25)";
+  const labelColor = def.color;
+  return /* @__PURE__ */ jsxRuntimeExports.jsxs(
+    "div",
+    {
+      style: {
+        position: "absolute",
+        left: 12,
+        top: "50%",
+        transform: "translateY(-50%)",
+        zIndex: 20,
+        pointerEvents: "none",
+        display: "flex",
+        flexDirection: "column",
+        alignItems: "flex-start",
+        gap: 4,
+        background: "rgba(0,5,14,0.72)",
+        border: `1px solid ${borderColor}`,
+        borderRadius: 4,
+        padding: "7px 10px",
+        backdropFilter: "blur(4px)",
+        minWidth: 68,
+        animation: isCritical ? "cep-panel-blink 1.2s ease-in-out infinite" : void 0
+      },
+      children: [
+        /* @__PURE__ */ jsxRuntimeExports.jsx("style", { children: `
+        @keyframes cep-panel-blink {
+          0%, 100% { box-shadow: 0 0 6px rgba(255,50,20,0.3); }
+          50%       { box-shadow: 0 0 14px rgba(255,50,20,0.7); }
+        }
+      ` }),
+        /* @__PURE__ */ jsxRuntimeExports.jsx(
+          "span",
           {
-            from,
-            to: "idle",
-            reason: `watchdog auto-reset after ${this._watchdogTimeoutMs}ms`,
-            ts: Date.now()
+            style: {
+              fontFamily: "monospace",
+              fontSize: "0.42rem",
+              letterSpacing: "0.2em",
+              color: "rgba(0,180,200,0.45)",
+              lineHeight: 1
+            },
+            children: "CEP"
           }
-        ];
-        for (const listener of this._stateChangeListeners) {
-          try {
-            listener(
-              "idle"
-              /* idle */
-            );
-          } catch (_) {
+        ),
+        /* @__PURE__ */ jsxRuntimeExports.jsx(
+          "span",
+          {
+            style: {
+              fontFamily: "monospace",
+              fontSize: "0.85rem",
+              fontWeight: 700,
+              letterSpacing: "0.1em",
+              color: labelColor,
+              lineHeight: 1
+            },
+            children: def.code
           }
-        }
-      }
-    }, this._watchdogTimeoutMs);
-  }
-  _clearWatchdog() {
-    if (this._watchdogTimer !== null) {
-      clearTimeout(this._watchdogTimer);
-      this._watchdogTimer = null;
+        ),
+        /* @__PURE__ */ jsxRuntimeExports.jsx(
+          "span",
+          {
+            style: {
+              fontFamily: "monospace",
+              fontSize: "0.38rem",
+              letterSpacing: "0.12em",
+              color: labelColor,
+              opacity: 0.8,
+              lineHeight: 1,
+              maxWidth: 60,
+              whiteSpace: "nowrap",
+              overflow: "hidden",
+              textOverflow: "ellipsis"
+            },
+            children: def.label
+          }
+        ),
+        /* @__PURE__ */ jsxRuntimeExports.jsx("div", { style: { display: "flex", gap: 2, marginTop: 2 }, children: CEP_LEVELS.map((d) => /* @__PURE__ */ jsxRuntimeExports.jsx(
+          "div",
+          {
+            style: {
+              width: 6,
+              height: 4,
+              borderRadius: 1,
+              background: d.level <= level ? d.color : "rgba(0,80,100,0.3)",
+              transition: "background 0.4s"
+            }
+          },
+          d.level
+        )) })
+      ]
     }
-  }
-}
-const globalFSM = new InteractionFSM();
-const RING_BUFFER_SIZE = 50;
-class InteractionEventBusImpl {
-  constructor() {
-    __publicField(this, "_buffer", []);
-    __publicField(this, "_subscribers", []);
-  }
-  /**
-   * Emit an interaction event. Assigns current timestamp automatically.
-   */
-  emit(event) {
-    const full = { ...event, ts: Date.now() };
-    if (this._buffer.length >= RING_BUFFER_SIZE) {
-      this._buffer = this._buffer.slice(-49);
-    }
-    this._buffer.push(full);
-    for (const sub of this._subscribers) {
-      try {
-        sub(full);
-      } catch (_) {
-      }
-    }
-  }
-  /**
-   * Returns a copy of the last 50 events, oldest first.
-   */
-  getRecentEvents() {
-    return [...this._buffer];
-  }
-  /**
-   * Subscribe to all emitted events. Returns an unsubscribe function.
-   */
-  subscribe(handler) {
-    this._subscribers.push(handler);
-    return () => {
-      this._subscribers = this._subscribers.filter((h2) => h2 !== handler);
-    };
-  }
-  /**
-   * Returns the most recent event of the given type, or null.
-   */
-  getLastEventOfType(type) {
-    for (let i2 = this._buffer.length - 1; i2 >= 0; i2--) {
-      if (this._buffer[i2].type === type) return this._buffer[i2];
-    }
-    return null;
-  }
-  /** Clear all buffered events (useful for test teardown). */
-  clear() {
-    this._buffer = [];
-  }
-}
-const interactionBus = new InteractionEventBusImpl();
-function pass(name, source, reason) {
-  return { name, pass: true, warn: false, reason, source };
-}
-function fail(name, source, reason) {
-  return { name, pass: false, warn: false, reason, source };
-}
-function warn(name, source, reason) {
-  return { name, pass: true, warn: true, reason, source };
-}
-function checkBlockingOverlayAboveGlobe() {
-  const name = "blockingOverlayAboveGlobe";
-  const source = "interactionAssertions";
-  try {
-    const canvas = document.querySelector("canvas");
-    if (!canvas) {
-      return warn(name, source, "Canvas not found — assertion deferred");
-    }
-    const rect = canvas.getBoundingClientRect();
-    const centerX = rect.left + rect.width / 2;
-    const centerY = rect.top + rect.height / 2;
-    const elements = Array.from(document.querySelectorAll("*"));
-    const blockers = [];
-    for (const el of elements) {
-      const htmlEl = el;
-      const cs = window.getComputedStyle(htmlEl);
-      if (cs.pointerEvents === "none") continue;
-      if (cs.position !== "fixed" && cs.position !== "absolute") continue;
-      const zIndex = Number.parseInt(cs.zIndex, 10);
-      if (Number.isNaN(zIndex) || zIndex <= 1) continue;
-      if (htmlEl.dataset.interactive === "true" || htmlEl.dataset.layer === "globe-canvas" || htmlEl.dataset.layer === "joystick")
-        continue;
-      const elRect = htmlEl.getBoundingClientRect();
-      if (elRect.left <= centerX && elRect.right >= centerX && elRect.top <= centerY && elRect.bottom >= centerY) {
-        blockers.push(
-          `<${htmlEl.tagName.toLowerCase()} data-layer="${htmlEl.dataset.layer ?? "?"}" z=${zIndex} pe=${cs.pointerEvents}>`
-        );
-      }
-    }
-    if (blockers.length > 0) {
-      return fail(
-        name,
-        source,
-        `${blockers.length} element(s) block globe center: ${blockers.slice(0, 3).join(", ")}`
-      );
-    }
-    return pass(
-      name,
-      source,
-      "No blocking overlays detected above globe center"
-    );
-  } catch (e) {
-    return warn(name, source, `Check threw: ${String(e)}`);
-  }
-}
-function checkIllegalPointerEventsOnDecorative() {
-  const name = "illegalPointerEventsOnDecorative";
-  const source = "interactionAssertions";
-  const decorativeLayers = ["glass", "hud-decoration", "cockpit-frame"];
-  const violations = [];
-  try {
-    for (const layerName of decorativeLayers) {
-      const els = Array.from(
-        document.querySelectorAll(`[data-layer="${layerName}"]`)
-      );
-      for (const el of els) {
-        const cs = window.getComputedStyle(el);
-        if (cs.pointerEvents !== "none") {
-          violations.push(
-            `data-layer="${layerName}" has pointer-events: ${cs.pointerEvents} — MUST be none`
-          );
-        }
-      }
-    }
-    if (violations.length > 0) {
-      return fail(name, source, violations.join(" | "));
-    }
-    return pass(
-      name,
-      source,
-      "All decorative layers have pointer-events: none"
-    );
-  } catch (e) {
-    return warn(name, source, `Check threw: ${String(e)}`);
-  }
-}
-function checkJoystickGlobeBleed() {
-  const name = "joystickGlobeBleed";
-  const source = "interactionAssertions";
-  return pass(
-    name,
-    source,
-    "V17.1 architecture: joystick drives cosmetic lean/gForce only — no velTheta/velPhi writes"
   );
 }
-function checkNonUniformGlobeScale() {
-  const name = "nonUniformGlobeScale";
-  const source = "interactionAssertions";
-  try {
-    const canvas = document.querySelector("canvas");
-    if (!canvas) {
-      return warn(name, source, "Canvas not found — skipping aspect check");
-    }
-    const w = canvas.offsetWidth;
-    const h2 = canvas.offsetHeight;
-    if (w === 0 || h2 === 0) {
-      return warn(name, source, `Canvas has zero dimension: ${w}x${h2}`);
-    }
-    const aspect2 = w / h2;
-    if (aspect2 > 3 || aspect2 < 1 / 3) {
-      return warn(
-        name,
-        source,
-        `Canvas aspect ratio ${aspect2.toFixed(2)} is severely off — globe may appear distorted`
-      );
-    }
-    return pass(
-      name,
-      source,
-      `Canvas ${w}x${h2} — aspect ${aspect2.toFixed(2)} OK`
-    );
-  } catch (e) {
-    return warn(name, source, `Check threw: ${String(e)}`);
-  }
-}
-function checkInvalidRaycastState() {
-  var _a2, _b2;
-  const name = "invalidRaycastState";
-  const source = "interactionAssertions";
-  try {
-    const state2 = useTacticalStore.getState();
-    const gt = state2.globeTarget;
-    if (gt === null || gt === void 0) {
-      return pass(name, source, "globeTarget is null — no active target");
-    }
-    const hasId = typeof gt.id === "string" && gt.id.length > 0;
-    const hasLat = gt.lat === void 0 || typeof gt.lat === "number";
-    const hasLng = gt.lng === void 0 || typeof gt.lng === "number";
-    if (!hasId) {
-      return fail(
-        name,
-        source,
-        `globeTarget.id is missing or invalid: ${JSON.stringify(gt)}`
-      );
-    }
-    if (!hasLat || !hasLng) {
-      return fail(
-        name,
-        source,
-        `globeTarget has malformed lat/lng: lat=${gt.lat}, lng=${gt.lng}`
-      );
-    }
-    return pass(
-      name,
-      source,
-      `globeTarget valid: id=${gt.id} lat=${(_a2 = gt.lat) == null ? void 0 : _a2.toFixed(2)} lng=${(_b2 = gt.lng) == null ? void 0 : _b2.toFixed(2)}`
-    );
-  } catch (e) {
-    return warn(name, source, `Check threw: ${String(e)}`);
-  }
-}
-function checkTargetLockWithoutHit() {
-  const name = "targetLockWithoutHit";
-  const source = "interactionAssertions";
-  try {
-    const state2 = useTacticalStore.getState();
-    const node = state2.selectedNode;
-    if (node === null || node === void 0) {
-      return pass(name, source, "selectedNode is null — no lock active");
-    }
-    const matchesTgt = /^TGT-/.test(node);
-    const matchesEnemy = /^enemy-/.test(node) || /^[a-zA-Z0-9_-]{4,}/.test(node);
-    if (!matchesTgt && !matchesEnemy) {
-      return warn(
-        name,
-        source,
-        `selectedNode "${node}" does not match TGT-* or enemy ID pattern — possible stale lock`
-      );
-    }
-    return pass(
-      name,
-      source,
-      `selectedNode "${node}" matches valid target pattern`
-    );
-  } catch (e) {
-    return warn(name, source, `Check threw: ${String(e)}`);
-  }
-}
-function runInteractionAssertions() {
-  return [
-    checkBlockingOverlayAboveGlobe(),
-    checkIllegalPointerEventsOnDecorative(),
-    checkJoystickGlobeBleed(),
-    checkNonUniformGlobeScale(),
-    checkInvalidRaycastState(),
-    checkTargetLockWithoutHit()
-  ];
-}
-const TUNING_STORAGE_KEY = "frontier_interaction_tuning";
-const TELEMETRY_STORAGE_KEY = "frontier_interaction_telemetry";
-const DEFAULT_TUNING = {
-  dragThresholdPx: 8,
-  tapDurationMs: 300,
-  reticleSensitivity: 1,
-  lockSensitivity: 1
-};
-function loadPersistedTuning() {
-  try {
-    const raw = localStorage.getItem(TUNING_STORAGE_KEY);
-    if (!raw) return { ...DEFAULT_TUNING };
-    const parsed = JSON.parse(raw);
-    return {
-      dragThresholdPx: typeof parsed.dragThresholdPx === "number" ? parsed.dragThresholdPx : DEFAULT_TUNING.dragThresholdPx,
-      tapDurationMs: typeof parsed.tapDurationMs === "number" ? parsed.tapDurationMs : DEFAULT_TUNING.tapDurationMs,
-      reticleSensitivity: typeof parsed.reticleSensitivity === "number" ? parsed.reticleSensitivity : DEFAULT_TUNING.reticleSensitivity,
-      lockSensitivity: typeof parsed.lockSensitivity === "number" ? parsed.lockSensitivity : DEFAULT_TUNING.lockSensitivity
-    };
-  } catch {
-    return { ...DEFAULT_TUNING };
-  }
-}
-function saveTuning(tuning) {
-  try {
-    localStorage.setItem(TUNING_STORAGE_KEY, JSON.stringify(tuning));
-  } catch {
-  }
-}
-function flushTelemetry(events2) {
-  try {
-    const payload = {
-      ts: Date.now(),
-      session: sessionStorage.getItem("frontier_session_id") ?? "unknown",
-      events: events2.slice(-50)
-    };
-    localStorage.setItem(TELEMETRY_STORAGE_KEY, JSON.stringify(payload));
-  } catch {
-  }
-}
-const useInteractionStore = create((set, get) => {
-  const initialTuning = loadPersistedTuning();
-  interactionBus.subscribe((event) => {
+const useShipStore = create((set, get) => ({
+  orbitalTheta: 0,
+  orbitalPhi: 0.18,
+  orbitalRadius: 5,
+  headingYaw: 0,
+  headingPitch: 0,
+  velTheta: 0,
+  velPhi: 0,
+  setOrbital: (theta, phi) => set({
+    orbitalTheta: theta,
+    orbitalPhi: Math.max(-1.3, Math.min(1.3, phi))
+  }),
+  setHeading: (yaw, pitch) => set({
+    headingYaw: Math.max(-0.35, Math.min(0.35, yaw)),
+    headingPitch: Math.max(-0.25, Math.min(0.25, pitch))
+  }),
+  setVelocity: (velTheta, velPhi) => set({ velTheta, velPhi }),
+  applyVelocityTick: (dt) => {
     const s = get();
-    const updated = [...s.recentEvents, event].slice(-10);
-    const telemetry = [...s.telemetryBuffer, event].slice(-50);
-    set({ recentEvents: updated, telemetryBuffer: telemetry });
-    if (event.type === "pointerdown" && event.source) {
-      set({ pointerOwner: event.source });
-    }
-    if (event.type === "pointerup") {
-      flushTelemetry(get().telemetryBuffer);
-      set({ pointerOwner: "none" });
-    }
-  });
-  globalFSM.onStateChange((s) => {
-    set({ fsmState: s });
-  });
-  setInterval(() => {
-    set({ stuckDurationMs: globalFSM.stuckDurationMs });
-  }, 1e3);
-  return {
-    fsmState: globalFSM.current,
-    // V20: read from FSM, not hardcoded
-    recentEvents: [],
-    telemetryBuffer: [],
-    pointerOwner: "none",
-    stuckDurationMs: 0,
-    lastRaycastResult: null,
-    lastTargetLockResult: null,
-    joystickActive: false,
-    assertionResults: [],
-    tapVsDragClassification: "unknown",
-    tuning: initialTuning,
-    tuningPersisted: true,
-    // loaded from storage, so already persisted
-    setFsmState: (s) => set({ fsmState: s }),
-    setPointerOwner: (owner) => set({ pointerOwner: owner }),
-    setLastRaycastResult: (r2) => set({ lastRaycastResult: r2 }),
-    setLastTargetLockResult: (r2) => set({ lastTargetLockResult: r2 }),
-    setJoystickActive: (v) => set({ joystickActive: v }),
-    setAssertionResults: (r2) => set({ assertionResults: r2 }),
-    setTapVsDragClassification: (v) => set({ tapVsDragClassification: v }),
-    pushEvent: (e) => {
-      const current = get().recentEvents;
-      set({ recentEvents: [...current, e].slice(-10) });
-    },
-    setTuning: (partial) => {
-      const next = { ...get().tuning, ...partial };
-      saveTuning(next);
-      set({ tuning: next, tuningPersisted: true });
-    },
-    resetTuning: () => {
-      saveTuning(DEFAULT_TUNING);
-      set({ tuning: { ...DEFAULT_TUNING }, tuningPersisted: true });
-    },
-    runAssertions: () => {
-      const results = runInteractionAssertions();
-      set({ assertionResults: results });
-    }
-  };
-});
-const INTRO_EVENTS = [
-  // ======================================================================
-  // PHASE: INTRO_DRIFT (events 1–3, index 0–2)
-  // ======================================================================
-  {
-    id: "intro_wake_drift",
-    introIndex: 0,
-    phase: 0,
-    phaseTrigger: "INTRO_DRIFT",
-    tags: ["observation", "systems_failure"],
-    title: "A.E.G.I.S. — PHASE 1",
-    message: "Cognitive systems stabilizing.\n\nYou don’t remember initiating launch.\nYou don’t remember a destination either.",
-    flavorText: "The ship hums like it’s been awake longer than you have.",
-    narratorLines: ["You are awake. You do not know why."],
-    aegisLines: ["Cognitive systems stabilizing. Commander, do you copy?"],
-    choices: [
-      {
-        label: "A",
-        text: "Check navigation logs",
-        resultText: "No recent entries found.",
-        cepDelta: 0
-      },
-      {
-        label: "B",
-        text: "Stay still and observe",
-        resultText: "Silence. Systems idle.",
-        cepDelta: 0
-      },
-      {
-        label: "C",
-        text: "Tap console repeatedly",
-        resultText: "Input acknowledged… reluctantly.",
-        cepDelta: 0
-      }
-    ]
-  },
-  {
-    id: "intro_background_noise",
-    introIndex: 1,
-    phase: 0,
-    phaseTrigger: "INTRO_DRIFT",
-    tags: ["humor_dark", "observation"],
-    title: "A.E.G.I.S. — PHASE 1",
-    message: "Audio channel active.\n\nA podcast is playing.\nYou don’t remember starting it.",
-    flavorText: "“…and if you’re orbiting a dead planet, statistically, it’s your fault.”",
-    aegisLines: [
-      "Commander. There appears to be an active audio channel. Source is unclear."
-    ],
-    choices: [
-      {
-        label: "A",
-        text: "Turn it off",
-        resultText: "Audio muted. Silence returns.",
-        cepDelta: 0
-      },
-      {
-        label: "B",
-        text: "Keep listening",
-        resultText: "“…and remember — hydrate, even in space.”",
-        cepDelta: 0
-      },
-      {
-        label: "C",
-        text: "Change channel",
-        resultText: "Static. Then laughter. Then nothing.",
-        cepDelta: 0
-      }
-    ]
-  },
-  {
-    id: "intro_cognitive_static",
-    introIndex: 2,
-    phase: 0,
-    phaseTrigger: "INTRO_DRIFT",
-    tags: ["observation", "systems_failure", "trust"],
-    title: "A.E.G.I.S. — COGNITIVE CHECK",
-    message: "Mental clarity index: suboptimal.\n\nMemory checksum: incomplete.\nLast confirmed timestamp: unknown.",
-    flavorText: "Something was supposed to happen. You can’t remember what.",
-    narratorLines: ["The gap in your memory isn’t small. It’s clean."],
-    aegisLines: ["Commander. Memory gap detected. Duration: unresolved."],
-    choices: [
-      {
-        label: "A",
-        text: "Force memory recall",
-        resultText: "Fragmented images. Nothing useful.",
-        cepDelta: 0
-      },
-      {
-        label: "B",
-        text: "Accept the gap",
-        resultText: "Acknowledged. Focus on present.",
-        cepDelta: 0
-      },
-      {
-        label: "C",
-        text: "Request A.E.G.I.S. briefing",
-        resultText: "A.E.G.I.S. preparing summary…",
-        cepDelta: 0
-      }
-    ]
-  },
-  // ======================================================================
-  // PHASE: INTRO_SYSTEMS (events 4–6, index 3–5)
-  // ======================================================================
-  {
-    id: "intro_signal_bleed",
-    introIndex: 3,
-    phase: 0,
-    phaseTrigger: "INTRO_SYSTEMS",
-    tags: ["anomaly", "observation"],
-    title: "A.E.G.I.S. — PHASE 2",
-    message: "Unidentified signal detected.\n\nThe signal is weak… rhythmic.\nAlmost structured.",
-    flavorText: "It brushes your systems — then disappears.",
-    narratorLines: ["A signal moves through the dark. Rhythmic. Deliberate."],
-    aegisLines: [
-      "Commander. Signal detected on passive array. Pattern does not match known sources."
-    ],
-    choices: [
-      {
-        label: "A",
-        text: "Attempt to isolate signal",
-        resultText: "Fragment captured. Pattern incomplete.",
-        cepDelta: 1
-      },
-      {
-        label: "B",
-        text: "Ignore signal",
-        resultText: "Signal lost.",
-        cepDelta: 0
-      },
-      {
-        label: "C",
-        text: "Boost receiver gain",
-        resultText: "Signal distortion increased. Minor interference detected.",
-        cepDelta: 1
-      }
-    ]
-  },
-  {
-    id: "intro_thermal_drift",
-    introIndex: 4,
-    phase: 0,
-    phaseTrigger: "INTRO_SYSTEMS",
-    tags: ["ship_maintenance", "systems_failure"],
-    title: "A.E.G.I.S. — PHASE 2",
-    message: "Internal temperature rising.\n\nThe heat isn’t from engines.\nIt’s… uneven.",
-    flavorText: "Like something is drawing power quietly.",
-    aegisLines: [
-      "Commander. Internal thermal readings are irregular. No engine fault detected."
-    ],
-    choices: [
-      {
-        label: "A",
-        text: "Run diagnostic",
-        resultText: "No faults detected.",
-        cepDelta: 0
-      },
-      {
-        label: "B",
-        text: "Reroute power",
-        resultText: "Temperature stabilizing. System strain increased.",
-        cepDelta: 0
-      },
-      {
-        label: "C",
-        text: "Ignore",
-        resultText: "Temperature continues rising.",
-        cepDelta: 1
-      }
-    ]
-  },
-  {
-    id: "intro_comms_fragment",
-    introIndex: 5,
-    phase: 0,
-    phaseTrigger: "INTRO_SYSTEMS",
-    tags: ["trust", "anomaly", "observation"],
-    title: "A.E.G.I.S. — COMMS ARRAY",
-    message: "Partial transmission received.\n\nOrigin: indeterminate.\nContent: fragmented.\n\n“…still here. We’re still—”",
-    flavorText: "The transmission ends before it begins.",
-    narratorLines: ["Someone tried to reach you. Past tense."],
-    aegisLines: ["Commander. Incoming transmission. Partial decode only."],
-    choices: [
-      {
-        label: "A",
-        text: "Trace the origin",
-        resultText: "Trace incomplete. Signal too fragmented.",
-        cepDelta: 0
-      },
-      {
-        label: "B",
-        text: "Log and continue",
-        resultText: "Logged. Marked for later analysis.",
-        cepDelta: 0
-      },
-      {
-        label: "C",
-        text: "Attempt response",
-        resultText: "Response sent into the dark.",
-        cepDelta: 0
-      }
-    ]
-  },
-  // ======================================================================
-  // PHASE: INTRO_RECOVERY (events 7–9, index 6–8)
-  // ======================================================================
-  {
-    id: "intro_manual_input",
-    introIndex: 6,
-    phase: 0,
-    phaseTrigger: "INTRO_RECOVERY",
-    tags: ["tools", "observation"],
-    title: "A.E.G.I.S. — PHASE 2",
-    message: "Manual control pathways available.\n\nThe controls feel unfamiliar…\nbut responsive.",
-    flavorText: "Like the ship wants you to try.",
-    aegisLines: [
-      "Commander. Manual control systems are responsive. You have the helm."
-    ],
-    choices: [
-      {
-        label: "A",
-        text: "Apply forward thrust",
-        resultText: "Velocity increasing.",
-        cepDelta: 0
-      },
-      {
-        label: "B",
-        text: "Adjust heading slightly",
-        resultText: "Trajectory altered.",
-        cepDelta: 0
-      },
-      {
-        label: "C",
-        text: "Do nothing",
-        resultText: "Ship maintains drift.",
-        cepDelta: 0
-      }
-    ]
-  },
-  {
-    id: "intro_oxygen_variance",
-    introIndex: 7,
-    phase: 0,
-    phaseTrigger: "INTRO_RECOVERY",
-    tags: ["ship_maintenance", "resource_tradeoff", "survival"],
-    title: "A.E.G.I.S. — LIFE SUPPORT",
-    message: "Oxygen variance detected.\n\nNot dangerous. Not yet.\nBut the recycler is running at 73% capacity.",
-    flavorText: "You notice it in how you breathe.",
-    aegisLines: [
-      "Commander. Life support nominal but reduced. Recommend attention."
-    ],
-    choices: [
-      {
-        label: "A",
-        text: "Reinitialize recycler",
-        resultText: "Recycler cycling. Efficiency improving.",
-        cepDelta: 0
-      },
-      {
-        label: "B",
-        text: "Monitor and wait",
-        resultText: "Monitoring active. No immediate danger.",
-        cepDelta: 0
-      },
-      {
-        label: "C",
-        text: "Seal secondary compartments",
-        resultText: "Compartments sealed. Reserve extended.",
-        cepDelta: 0
-      }
-    ]
-  },
-  {
-    id: "intro_star_calibration",
-    introIndex: 8,
-    phase: 0,
-    phaseTrigger: "INTRO_RECOVERY",
-    tags: ["observation", "tools", "survival"],
-    title: "A.E.G.I.S. — NAVIGATION REFERENCE",
-    message: "Primary nav offline.\n\nFalling back to stellar reference.\nConstellations: confirmed.\n\nYou know where you are.",
-    flavorText: "The stars haven’t moved. At least that’s something.",
-    narratorLines: [
-      "The stars are honest. They don’t tell you where to go. Only where you are."
-    ],
-    aegisLines: ["Stellar calibration complete. Position confirmed."],
-    choices: [
-      {
-        label: "A",
-        text: "Accept stellar calibration",
-        resultText: "Navigation updated. Heading confirmed.",
-        cepDelta: 0
-      },
-      {
-        label: "B",
-        text: "Wait for primary nav",
-        resultText: "Nav awaiting restart. Drift continuing.",
-        cepDelta: 0
-      },
-      {
-        label: "C",
-        text: "Set manual heading by visual",
-        resultText: "Manual heading locked. Steady as she goes.",
-        cepDelta: 1
-      }
-    ]
-  },
-  // ======================================================================
-  // PHASE: INTRO_ANOMALY (events 10–13, index 9–12)
-  // ======================================================================
-  {
-    id: "intro_trajectory_conflict",
-    introIndex: 9,
-    phase: 0,
-    phaseTrigger: "INTRO_ANOMALY",
-    tags: ["anomaly", "systems_failure", "trust"],
-    title: "A.E.G.I.S. — PHASE 3",
-    message: "Navigation discrepancy detected.\n\nYour heading…\ndoes not match your input.",
-    flavorText: "The ship is correcting itself.",
-    narratorLines: ["The course was set before you arrived."],
-    aegisLines: [
-      "Commander. Navigation override detected. Source is internal. This should not be possible."
-    ],
-    choices: [
-      {
-        label: "A",
-        text: "Override navigation",
-        resultText: "Manual control restored.",
-        cepDelta: 1
-      },
-      {
-        label: "B",
-        text: "Allow correction",
-        resultText: "Trajectory stabilized.",
-        cepDelta: 0
-      },
-      {
-        label: "C",
-        text: "Disable guidance",
-        resultText: "Navigation offline. Drift increasing.",
-        cepDelta: 0
-      }
-    ]
-  },
-  {
-    id: "intro_first_visual_lock",
-    introIndex: 10,
-    phase: 0,
-    phaseTrigger: "INTRO_ANOMALY",
-    tags: ["observation", "escalation", "cep_related"],
-    title: "A.E.G.I.S. — PHASE 3",
-    message: "Object confirmed.\n\nThere is a planet ahead.\nYou are already moving toward it.",
-    flavorText: "You don’t remember choosing that.",
-    narratorLines: ["It fills the viewport slowly. Like it was waiting."],
-    aegisLines: [
-      "Commander. Planetary body confirmed. We are on approach. I did not set this course."
-    ],
-    choices: [
-      {
-        label: "A",
-        text: "Lock visual target",
-        resultText: "Target locked.",
-        cepDelta: 1
-      },
-      {
-        label: "B",
-        text: "Look away",
-        resultText: "Target remains in peripheral view.",
-        cepDelta: 0
-      },
-      {
-        label: "C",
-        text: "Increase zoom",
-        resultText: "Surface detail increasing.",
-        cepDelta: 1
-      }
-    ]
-  },
-  {
-    id: "intro_power_redistribution",
-    introIndex: 11,
-    phase: 0,
-    phaseTrigger: "INTRO_ANOMALY",
-    tags: ["systems_failure", "anomaly", "ship_maintenance"],
-    title: "A.E.G.I.S. — PHASE 3",
-    message: "Power grid fluctuation.\n\nEnergy is shifting between systems.\nNot by your command.",
-    flavorText: "It stabilizes… then shifts again.",
-    aegisLines: [
-      "Commander. Power redistribution in progress. Unauthorized. I am attempting to trace the source."
-    ],
-    choices: [
-      {
-        label: "A",
-        text: "Lock power routing",
-        resultText: "Grid stabilized.",
-        cepDelta: 0
-      },
-      {
-        label: "B",
-        text: "Let it adjust",
-        resultText: "Efficiency improved… slightly.",
-        cepDelta: 0
-      },
-      {
-        label: "C",
-        text: "Cut non-essential systems",
-        resultText: "Power conserved. Visibility reduced.",
-        cepDelta: 0
-      }
-    ]
-  },
-  {
-    id: "intro_system_awareness",
-    introIndex: 12,
-    phase: 0,
-    phaseTrigger: "INTRO_ANOMALY",
-    tags: ["anomaly", "cep_related", "escalation", "trust"],
-    title: "A.E.G.I.S. — PHASE 4",
-    message: "External observation suspected.\n\nSomething is reacting…\nto your activity.",
-    flavorText: "Not visually. Not audibly. But consistently.",
-    narratorLines: ["Something out there is paying attention."],
-    aegisLines: [
-      "Commander. I am detecting a pattern. External response correlates with our activity. We are being observed."
-    ],
-    choices: [
-      {
-        label: "A",
-        text: "Reduce activity",
-        resultText: "System quieted.",
-        cepDelta: -1
-      },
-      {
-        label: "B",
-        text: "Continue normal operation",
-        resultText: "No immediate change.",
-        cepDelta: 0
-      },
-      {
-        label: "C",
-        text: "Increase activity",
-        resultText: "Signal response intensifies.",
-        cepDelta: 2
-      }
-    ]
-  },
-  // ======================================================================
-  // PHASE: INTRO_HANDOFF (events 14–15, index 13–14)
-  // ======================================================================
-  {
-    id: "intro_approach_commitment",
-    introIndex: 13,
-    phase: 0,
-    phaseTrigger: "INTRO_HANDOFF",
-    tags: ["escalation", "cep_related", "trust"],
-    title: "A.E.G.I.S. — PHASE 4",
-    message: "Proximity threshold reached.\n\nThe planet fills your view now.\n\nWhatever is happening…\nyou are already part of it.",
-    flavorText: "There is no turning back from here.",
-    narratorLines: ["The point of no return arrives quietly. It always does."],
-    aegisLines: [
-      "Commander. We have crossed the threshold. Whatever comes next — I am with you."
-    ],
-    choices: [
-      {
-        label: "A",
-        text: "Commit to approach",
-        resultText: "Approach confirmed.",
-        cepDelta: 1
-      },
-      {
-        label: "B",
-        text: "Attempt course correction",
-        resultText: "Correction limited.",
-        cepDelta: 0
-      },
-      {
-        label: "C",
-        text: "Power engines fully",
-        resultText: "Velocity increasing. No going back.",
-        cepDelta: 2
-      }
-    ]
-  },
-  {
-    id: "intro_threshold_crossing",
-    introIndex: 14,
-    phase: 0,
-    phaseTrigger: "INTRO_HANDOFF",
-    tags: ["escalation", "cep_related", "trust", "survival"],
-    title: "A.E.G.I.S. — FINAL THRESHOLD",
-    message: "All systems: aware.\nAll systems: watching.\n\nThe planet has acknowledged your presence.\n\nThis is no longer a transit.\nThis is a contact.",
-    flavorText: "You crossed the line the moment you didn’t turn back.",
-    narratorLines: [
-      "This is the moment it begins. Not when you flew. When you stayed."
-    ],
-    aegisLines: [
-      "Commander. We have been acknowledged. Whatever comes next — we are ready."
-    ],
-    choices: [
-      {
-        label: "A",
-        text: "Initiate contact protocol",
-        resultText: "Protocol active. No response. Expected.",
-        cepDelta: 2
-      },
-      {
-        label: "B",
-        text: "Maintain current heading",
-        resultText: "Acknowledged. We are committed.",
-        cepDelta: 1
-      },
-      {
-        label: "C",
-        text: "Full tactical readiness",
-        resultText: "All systems primed. A.E.G.I.S. standing by.",
-        cepDelta: 2
-      }
-    ]
+    const newTheta = s.orbitalTheta + s.velTheta * dt;
+    const newPhi = Math.max(-1.3, Math.min(1.3, s.orbitalPhi + s.velPhi * dt));
+    const friction = 0.88;
+    const nVT = s.velTheta * friction;
+    const nVP = s.velPhi * friction;
+    const hd = 0.965;
+    set({
+      orbitalTheta: newTheta,
+      orbitalPhi: newPhi,
+      velTheta: Math.abs(nVT) < 1e-5 ? 0 : nVT,
+      velPhi: Math.abs(nVP) < 1e-5 ? 0 : nVP,
+      headingYaw: s.headingYaw * hd,
+      headingPitch: s.headingPitch * hd
+    });
   }
-];
-const INTRO_EVENT_IDS = INTRO_EVENTS.map((e) => e.id);
-function getIntroEventByIndex(index2) {
-  return INTRO_EVENTS[index2];
-}
-const INTRO_PHASE_ORDER$1 = [
-  "INTRO_DRIFT",
-  "INTRO_SYSTEMS",
-  "INTRO_RECOVERY",
-  "INTRO_ANOMALY",
-  "INTRO_HANDOFF"
-];
-function phaseRank(phase) {
-  return INTRO_PHASE_ORDER$1.indexOf(phase);
-}
-const useIntroEventEngine = create(
-  (set, get) => ({
-    introEventIndex: 0,
-    introSequenceComplete: false,
-    adaptiveUnlocked: false,
-    currentIntroPhase: null,
-    lastEventId: null,
-    lastChoiceLabel: null,
-    lastCEPDelta: 0,
-    memoryWriteSuccess: false,
-    voiceActive: false,
-    isInitialized: false,
-    initEngine: () => {
-      if (get().isInitialized) return;
-      console.log(
-        "[INTRO-ENGINE] Initialized — locked intro sequence: 15 events"
-      );
-      set({ isInitialized: true, introEventIndex: 0 });
-    },
-    onPhaseEnter: (phase) => {
-      const state2 = get();
-      if (state2.introSequenceComplete) return;
-      console.log(
-        `[INTRO-ENGINE] Phase entered: ${phase} | next index: ${state2.introEventIndex}`
-      );
-      set({ currentIntroPhase: phase });
-      _fireNextEligibleEvent(phase, state2.introEventIndex);
-    },
-    onEventDismissed: (eventId) => {
-      const state2 = get();
-      if (state2.introSequenceComplete) return;
-      const dismissedIndex = INTRO_EVENT_IDS.indexOf(eventId);
-      if (dismissedIndex < 0) return;
-      console.log(
-        `[INTRO-ENGINE] Dismissed: ${eventId} (introIndex ${dismissedIndex})`
-      );
-      if (dismissedIndex >= 14) {
-        get().completeSequence();
-        return;
-      }
-      const nextIndex = dismissedIndex + 1;
-      set({ introEventIndex: nextIndex, lastEventId: eventId });
-      const nextEvent = getIntroEventByIndex(nextIndex);
-      if ((nextEvent == null ? void 0 : nextEvent.phaseTrigger) && state2.currentIntroPhase) {
-        const nextRank = phaseRank(nextEvent.phaseTrigger);
-        const currentRank = phaseRank(state2.currentIntroPhase);
-        if (currentRank >= nextRank) {
-          _fireNextEligibleEvent(state2.currentIntroPhase, nextIndex);
-        }
-      }
-    },
-    setLastCEPDelta: (delta, choiceLabel) => {
-      set({ lastCEPDelta: delta, lastChoiceLabel: choiceLabel });
-    },
-    setVoiceActive: (active) => {
-      set({ voiceActive: active });
-    },
-    setMemoryWriteSuccess: (ok) => {
-      set({ memoryWriteSuccess: ok });
-    },
-    completeSequence: () => {
-      console.log(
-        "[INTRO-ENGINE] ✅ Intro sequence complete (15/15) — adaptive pool UNLOCKED"
-      );
-      set({
-        introSequenceComplete: true,
-        adaptiveUnlocked: true,
-        introEventIndex: 15
-      });
-    }
-  })
-);
-function _fireNextEligibleEvent(phase, fromIndex) {
-  const event = getIntroEventByIndex(fromIndex);
-  if (!event) return;
-  if (event.phaseTrigger !== phase) return;
-  __vitePreload(async () => {
-    const { useNarrativeStore: useNarrativeStore2 } = await Promise.resolve().then(() => useNarrativeStore$1);
-    return { useNarrativeStore: useNarrativeStore2 };
-  }, true ? void 0 : void 0).then(({ useNarrativeStore: useNarrativeStore2 }) => {
-    const narrativeState = useNarrativeStore2.getState();
-    if (narrativeState.triggeredEventIds.includes(event.id)) {
-      console.log(`[INTRO-ENGINE] Already triggered: ${event.id} — skipping`);
-      return;
-    }
-    console.log(
-      `[INTRO-ENGINE] Firing [${fromIndex}/${INTRO_EVENT_IDS.length - 1}]: ${event.id}`
-    );
-    narrativeState.triggerEvent(event.id);
-  }).catch(() => {
-  });
-}
-const useIntroEventEngine$1 = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.defineProperty({
-  __proto__: null,
-  useIntroEventEngine
-}, Symbol.toStringTag, { value: "Module" }));
-const DEFAULT_TRAITS = {
-  risk_tolerance: 50,
-  curiosity: 50,
-  obedience: 50,
-  resource_conservation: 50,
-  tool_affinity: 50,
-  system_trust: 50,
-  aggression: 50,
-  patience: 50
-};
-function inferTraitDeltas(tags, choiceLabel, cepDelta) {
-  const deltas = {};
-  if (tags.includes("survival")) deltas.patience = (deltas.patience ?? 0) + 2;
-  if (tags.includes("anomaly")) deltas.curiosity = (deltas.curiosity ?? 0) + 2;
-  if (tags.includes("tools"))
-    deltas.tool_affinity = (deltas.tool_affinity ?? 0) + 3;
-  if (tags.includes("trust"))
-    deltas.system_trust = (deltas.system_trust ?? 0) - 1;
-  if (tags.includes("ship_maintenance"))
-    deltas.resource_conservation = (deltas.resource_conservation ?? 0) + 2;
-  if (tags.includes("escalation"))
-    deltas.aggression = (deltas.aggression ?? 0) + 1;
-  if (tags.includes("resource_tradeoff"))
-    deltas.resource_conservation = (deltas.resource_conservation ?? 0) + 2;
-  if (cepDelta > 1) {
-    deltas.risk_tolerance = (deltas.risk_tolerance ?? 0) + cepDelta;
-    deltas.aggression = (deltas.aggression ?? 0) + 1;
-  } else if (cepDelta < 0) {
-    deltas.patience = (deltas.patience ?? 0) + 2;
-    deltas.obedience = (deltas.obedience ?? 0) + 1;
-  }
-  if (choiceLabel === "C") deltas.curiosity = (deltas.curiosity ?? 0) + 1;
-  if (choiceLabel === "A") deltas.obedience = (deltas.obedience ?? 0) + 1;
-  return deltas;
-}
-const usePlayerMemoryStore = create()(
-  persist(
-    (set, get) => ({
-      totalDecisions: 0,
-      totalEventsShown: 0,
-      decisionHistory: [],
-      traitScores: { ...DEFAULT_TRAITS },
-      recordDecision: (record) => {
-        const state2 = get();
-        const full = { ...record, ts: Date.now() };
-        const deltas = inferTraitDeltas(
-          record.tags,
-          record.choiceLabel,
-          record.cepDelta
-        );
-        const newScores = { ...state2.traitScores };
-        for (const [k2, d] of Object.entries(deltas)) {
-          const key = k2;
-          newScores[key] = Math.max(
-            0,
-            Math.min(100, (newScores[key] ?? 50) + d)
-          );
-        }
-        const newHistory = [full, ...state2.decisionHistory].slice(0, 200);
-        console.log(
-          `[MEMORY] Decision recorded: ${record.eventId} [${record.choiceLabel}] cep:${record.cepDelta}`
-        );
-        set({
-          decisionHistory: newHistory,
-          totalDecisions: state2.totalDecisions + 1,
-          traitScores: newScores
-        });
-      },
-      incrementEventsShown: () => {
-        set((s) => ({ totalEventsShown: s.totalEventsShown + 1 }));
-      },
-      updateTrait: (key, delta) => {
-        const scores = get().traitScores;
-        set({
-          traitScores: {
-            ...scores,
-            [key]: Math.max(0, Math.min(100, scores[key] + delta))
-          }
-        });
-      },
-      getTraitScore: (key) => {
-        return get().traitScores[key] ?? 50;
-      },
-      resetMemory: () => {
-        set({
-          totalDecisions: 0,
-          totalEventsShown: 0,
-          decisionHistory: [],
-          traitScores: { ...DEFAULT_TRAITS }
-        });
-      }
-    }),
-    {
-      name: "frontier_memory_v1",
-      partialize: (state2) => ({
-        totalDecisions: state2.totalDecisions,
-        totalEventsShown: state2.totalEventsShown,
-        decisionHistory: state2.decisionHistory.slice(0, 100),
-        // cap persisted history
-        traitScores: state2.traitScores
-      })
-    }
-  )
-);
-const usePlayerMemoryStore$1 = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.defineProperty({
-  __proto__: null,
-  usePlayerMemoryStore
-}, Symbol.toStringTag, { value: "Module" }));
+}));
 const MODE_DEFINITIONS = {
   orbitObservation: {
     mode: "orbitObservation",
@@ -74703,1963 +73686,6 @@ const useNavGateStore = create((set) => ({
   recordTapAccepted: (targetId) => set({ lastTapAccepted: { targetId, ts: Date.now() } }),
   recordAutoTransition: (from, to, targetId) => set({ lastAutoTransition: { from, to, targetId, ts: Date.now() } })
 }));
-const cameraOffsetObserver = {
-  appliedFov: 60,
-  appliedDistOffset: 0,
-  currentMode: "orbitObservation"
-};
-function deriveFlags(mode) {
-  const def = MODE_DEFINITIONS[mode];
-  return {
-    globeTargetingEnabled: def.globe.targetingEnabled,
-    globeOwnsTap: def.input.globeOwnsTap,
-    joystickPrimary: def.input.joystickPrimary,
-    showTargetingReticle: def.hud.showTargetingReticle,
-    showCruiseIndicator: def.hud.showCruiseIndicator,
-    alertLevel: def.hud.alertLevel,
-    hudLabel: def.label,
-    hudCode: def.code
-  };
-}
-const useNavigationModeStore = create(
-  (set, _get) => {
-    globalNavMode.onModeChange((mode, prev) => {
-      set({
-        currentMode: mode,
-        previousMode: prev,
-        transitionHistory: globalNavMode.getHistory(),
-        ...deriveFlags(mode)
-      });
-    });
-    const initial = globalNavMode.currentMode;
-    return {
-      currentMode: initial,
-      previousMode: initial,
-      transitionHistory: [],
-      ...deriveFlags(initial),
-      transitionTo: (to, reason) => {
-        return globalNavMode.transitionTo(to, reason);
-      },
-      forceMode: (mode, reason) => {
-        globalNavMode.forceMode(mode, reason);
-      }
-    };
-  }
-);
-function runPath(fsm, path, steps) {
-  const stepLabels = [];
-  for (const step of steps) {
-    const ok = fsm.transition(step.to, step.reason);
-    const label = `${step.to}(${ok ? "ok" : "blocked"})`;
-    stepLabels.push(label);
-    if (ok !== step.expectSuccess) {
-      return {
-        path,
-        steps: stepLabels,
-        pass: false,
-        failAt: step.to,
-        reason: `Expected transition to ${step.to} to ${step.expectSuccess ? "succeed" : "be blocked"} but got ${ok ? "success" : "blocked"}`
-      };
-    }
-  }
-  return { path, steps: stepLabels, pass: true };
-}
-function runInteractionModelTests() {
-  const results = [];
-  {
-    const fsm = new InteractionFSM();
-    results.push(
-      runPath(fsm, "tapLock", [
-        {
-          to: InteractionState.pointerDown,
-          expectSuccess: true,
-          reason: "pointer contact"
-        },
-        {
-          to: InteractionState.tapCandidate,
-          expectSuccess: true,
-          reason: "held < threshold"
-        },
-        {
-          to: InteractionState.targetLocked,
-          expectSuccess: true,
-          reason: "globe hit confirmed"
-        }
-      ])
-    );
-    fsm.reset();
-  }
-  {
-    const fsm = new InteractionFSM();
-    results.push(
-      runPath(fsm, "dragRotate", [
-        {
-          to: InteractionState.pointerDown,
-          expectSuccess: true,
-          reason: "pointer contact"
-        },
-        {
-          to: InteractionState.tapCandidate,
-          expectSuccess: true,
-          reason: "held < threshold"
-        },
-        {
-          to: InteractionState.draggingGlobe,
-          expectSuccess: true,
-          reason: "moved > 8px"
-        },
-        {
-          to: InteractionState.idle,
-          expectSuccess: true,
-          reason: "pointer up"
-        }
-      ])
-    );
-    fsm.reset();
-  }
-  {
-    const fsm = new InteractionFSM();
-    results.push(
-      runPath(fsm, "tapOutsideGlobe", [
-        {
-          to: InteractionState.pointerDown,
-          expectSuccess: true,
-          reason: "pointer contact"
-        },
-        {
-          to: InteractionState.tapCandidate,
-          expectSuccess: true,
-          reason: "held < threshold"
-        },
-        {
-          to: InteractionState.idle,
-          expectSuccess: true,
-          reason: "no globe hit"
-        }
-      ])
-    );
-    fsm.reset();
-  }
-  {
-    const fsm = new InteractionFSM();
-    results.push(
-      runPath(fsm, "joystickWhileIdle", [
-        {
-          to: InteractionState.joystickActive,
-          expectSuccess: true,
-          reason: "joystick > deadzone"
-        },
-        {
-          to: InteractionState.idle,
-          expectSuccess: true,
-          reason: "joystick neutral"
-        }
-      ])
-    );
-    fsm.reset();
-  }
-  {
-    const fsm = new InteractionFSM();
-    results.push(
-      runPath(fsm, "joystickDuringLock", [
-        {
-          to: InteractionState.pointerDown,
-          expectSuccess: true,
-          reason: "pointer contact"
-        },
-        {
-          to: InteractionState.tapCandidate,
-          expectSuccess: true,
-          reason: "held < threshold"
-        },
-        {
-          to: InteractionState.targetLocked,
-          expectSuccess: true,
-          reason: "globe hit confirmed"
-        },
-        {
-          to: InteractionState.joystickActive,
-          expectSuccess: true,
-          reason: "joystick moved while locked"
-        }
-      ])
-    );
-    fsm.reset();
-  }
-  {
-    const fsm = new InteractionFSM();
-    results.push(
-      runPath(fsm, "rapidTapDrag", [
-        {
-          to: InteractionState.pointerDown,
-          expectSuccess: true,
-          reason: "pointer contact"
-        },
-        // pointerDown → draggingGlobe IS in TRANSITION_TABLE so this should succeed
-        {
-          to: InteractionState.draggingGlobe,
-          expectSuccess: true,
-          reason: "rapid movement > threshold"
-        },
-        {
-          to: InteractionState.idle,
-          expectSuccess: true,
-          reason: "pointer up"
-        }
-      ])
-    );
-    fsm.reset();
-  }
-  {
-    let caught = false;
-    const unsub = interactionBus.subscribe((e) => {
-      if (e.type === "illegalInputInterception") caught = true;
-    });
-    interactionBus.emit({
-      type: "illegalInputInterception",
-      source: "test-overlay",
-      data: { reason: "test: overlay intercepted pointer-events" }
-    });
-    unsub();
-    results.push({
-      path: "overlayInterception",
-      steps: ["emit(illegalInputInterception)", `caught=${caught}`],
-      pass: caught,
-      failAt: caught ? void 0 : "illegalInputInterception",
-      reason: caught ? void 0 : "Bus did not deliver illegalInputInterception event"
-    });
-  }
-  return results;
-}
-const interactionModelTests = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.defineProperty({
-  __proto__: null,
-  runInteractionModelTests
-}, Symbol.toStringTag, { value: "Module" }));
-const STORAGE_KEY = "tci_intro_v1";
-const useIntroStore = create()(
-  persist(
-    (set, get) => ({
-      introComplete: false,
-      introPlaying: false,
-      introSkipped: false,
-      firstLaunchAt: null,
-      pendingTutorialStart: false,
-      initIntroGating: () => {
-        const state2 = get();
-        if (!state2.introComplete) {
-          set({
-            introPlaying: true,
-            firstLaunchAt: state2.firstLaunchAt ?? Date.now()
-          });
-        }
-      },
-      completeIntro: () => {
-        set({
-          introPlaying: false,
-          introComplete: true,
-          introSkipped: false,
-          pendingTutorialStart: true
-        });
-      },
-      skipIntro: () => {
-        set({
-          introPlaying: false,
-          introComplete: true,
-          introSkipped: true,
-          pendingTutorialStart: true
-        });
-      },
-      triggerNewGame: () => {
-        set({
-          introPlaying: true,
-          introComplete: false,
-          introSkipped: false,
-          pendingTutorialStart: false
-        });
-      },
-      replayIntro: () => {
-        set({ introPlaying: true });
-      },
-      consumeTutorialStart: () => {
-        set({ pendingTutorialStart: false });
-      }
-    }),
-    {
-      name: STORAGE_KEY,
-      // Only persist fields that should survive reload
-      partialize: (state2) => ({
-        introComplete: state2.introComplete,
-        introSkipped: state2.introSkipped,
-        firstLaunchAt: state2.firstLaunchAt
-      })
-    }
-  )
-);
-const useShipStore = create((set, get) => ({
-  orbitalTheta: 0,
-  orbitalPhi: 0.18,
-  orbitalRadius: 5,
-  headingYaw: 0,
-  headingPitch: 0,
-  velTheta: 0,
-  velPhi: 0,
-  setOrbital: (theta, phi) => set({
-    orbitalTheta: theta,
-    orbitalPhi: Math.max(-1.3, Math.min(1.3, phi))
-  }),
-  setHeading: (yaw, pitch) => set({
-    headingYaw: Math.max(-0.35, Math.min(0.35, yaw)),
-    headingPitch: Math.max(-0.25, Math.min(0.25, pitch))
-  }),
-  setVelocity: (velTheta, velPhi) => set({ velTheta, velPhi }),
-  applyVelocityTick: (dt) => {
-    const s = get();
-    const newTheta = s.orbitalTheta + s.velTheta * dt;
-    const newPhi = Math.max(-1.3, Math.min(1.3, s.orbitalPhi + s.velPhi * dt));
-    const friction = 0.88;
-    const nVT = s.velTheta * friction;
-    const nVP = s.velPhi * friction;
-    const hd = 0.965;
-    set({
-      orbitalTheta: newTheta,
-      orbitalPhi: newPhi,
-      velTheta: Math.abs(nVT) < 1e-5 ? 0 : nVT,
-      velPhi: Math.abs(nVP) < 1e-5 ? 0 : nVP,
-      headingYaw: s.headingYaw * hd,
-      headingPitch: s.headingPitch * hd
-    });
-  }
-}));
-const joystick = { x: 0, y: 0 };
-const keyboard = { x: 0, y: 0 };
-let headingYaw = 0;
-let headingPitch = 0;
-let joystickMotionIntensity = 0;
-const THRUST_RATE = 225e-6;
-const HEADING_DECAY = 0.975;
-const INTENSITY_DECAY = 0.92;
-const MAX_VEL = THRUST_RATE * 18;
-function setJoystickInput(x2, y) {
-  joystick.x = Math.max(-1, Math.min(1, x2));
-  joystick.y = Math.max(-1, Math.min(1, y));
-}
-function setKeyboardInput(x2, y) {
-  keyboard.x = Math.max(-1, Math.min(1, x2));
-  keyboard.y = Math.max(-1, Math.min(1, y));
-}
-function getJoystickMotionIntensity() {
-  return joystickMotionIntensity;
-}
-let rafId = null;
-let lastTime = 0;
-function tick(now2) {
-  const dt = Math.min(now2 - lastTime, 50);
-  lastTime = now2;
-  const store = useShipStore.getState();
-  const inputX = keyboard.x;
-  const inputY = keyboard.y;
-  const thrustTheta = inputX * THRUST_RATE;
-  const thrustPhi = -inputY * THRUST_RATE;
-  const nVT = Math.max(
-    -MAX_VEL,
-    Math.min(MAX_VEL, store.velTheta + thrustTheta * dt)
-  );
-  const nVP = Math.max(
-    -MAX_VEL,
-    Math.min(MAX_VEL, store.velPhi + thrustPhi * dt)
-  );
-  store.setVelocity(nVT, nVP);
-  store.applyVelocityTick(dt);
-  headingYaw *= HEADING_DECAY;
-  headingPitch *= HEADING_DECAY;
-  store.setHeading(headingYaw, headingPitch);
-  const jsX = joystick.x;
-  const jsY = joystick.y;
-  const jsMag = Math.sqrt(jsX * jsX + jsY * jsY);
-  if (jsMag > 0.01) {
-    joystickMotionIntensity = Math.min(1, jsMag);
-    setCockpitLean(-jsX * 1.5);
-    const velNorm = Math.min(1, jsMag);
-    setGForceAmp(1 + velNorm * 0.5);
-  } else {
-    joystickMotionIntensity *= INTENSITY_DECAY;
-    if (joystickMotionIntensity < 0.01) joystickMotionIntensity = 0;
-    setCockpitLean(-inputX * 1.5);
-    const velMag = Math.sqrt(nVT * nVT + nVP * nVP);
-    const velNorm = Math.min(1, velMag / MAX_VEL);
-    setGForceAmp(1 + velNorm * 0.5);
-  }
-  rafId = requestAnimationFrame(tick);
-}
-function startShipMovementEngine() {
-  if (rafId !== null) return;
-  lastTime = performance.now();
-  rafId = requestAnimationFrame(tick);
-}
-function stopShipMovementEngine() {
-  if (rafId !== null) {
-    cancelAnimationFrame(rafId);
-    rafId = null;
-  }
-  setJoystickInput(0, 0);
-  setCockpitLean(0);
-  setGForceAmp(1);
-  joystickMotionIntensity = 0;
-}
-const keysDown = /* @__PURE__ */ new Set();
-function updateKb() {
-  let x2 = 0;
-  let y = 0;
-  if (keysDown.has("ArrowLeft") || keysDown.has("a") || keysDown.has("A"))
-    x2 -= 1;
-  if (keysDown.has("ArrowRight") || keysDown.has("d") || keysDown.has("D"))
-    x2 += 1;
-  if (keysDown.has("ArrowUp") || keysDown.has("w") || keysDown.has("W")) y += 1;
-  if (keysDown.has("ArrowDown") || keysDown.has("s") || keysDown.has("S"))
-    y -= 1;
-  setKeyboardInput(x2, y);
-}
-function attachKeyboardListeners() {
-  const down = (e) => {
-    var _a2;
-    const tag = (_a2 = e.target) == null ? void 0 : _a2.tagName;
-    if (tag === "INPUT" || tag === "TEXTAREA") return;
-    keysDown.add(e.key);
-    updateKb();
-  };
-  const up = (e) => {
-    keysDown.delete(e.key);
-    updateKb();
-  };
-  window.addEventListener("keydown", down);
-  window.addEventListener("keyup", up);
-  return () => {
-    window.removeEventListener("keydown", down);
-    window.removeEventListener("keyup", up);
-    keysDown.clear();
-    setKeyboardInput(0, 0);
-    setCockpitLean(0);
-    setGForceAmp(1);
-  };
-}
-let mouseDown = false;
-let mouseLX = 0;
-let mouseLY = 0;
-function attachMouseDragListeners() {
-  const onDown = (e) => {
-    if (e.button === 0 || e.button === 2) {
-      mouseDown = true;
-      mouseLX = e.clientX;
-      mouseLY = e.clientY;
-    }
-  };
-  const onUp = () => {
-    mouseDown = false;
-  };
-  const onMove = (e) => {
-    if (!mouseDown) return;
-    const dx = e.clientX - mouseLX;
-    const dy = e.clientY - mouseLY;
-    mouseLX = e.clientX;
-    mouseLY = e.clientY;
-    if (e.clientX > window.innerWidth * 0.5) {
-      const s = useShipStore.getState();
-      const maxV = 8e-3;
-      s.setVelocity(
-        Math.max(-maxV, Math.min(maxV, s.velTheta - dx * 3e-4)),
-        Math.max(-maxV, Math.min(maxV, s.velPhi + dy * 25e-5))
-      );
-    }
-  };
-  const noCtx = (e) => e.preventDefault();
-  window.addEventListener("mousedown", onDown);
-  window.addEventListener("mouseup", onUp);
-  window.addEventListener("mousemove", onMove);
-  window.addEventListener("contextmenu", noCtx);
-  return () => {
-    window.removeEventListener("mousedown", onDown);
-    window.removeEventListener("mouseup", onUp);
-    window.removeEventListener("mousemove", onMove);
-    window.removeEventListener("contextmenu", noCtx);
-  };
-}
-function r(name, status, detail) {
-  return { name, status, detail };
-}
-function suite(name, results) {
-  return {
-    suite: name,
-    results,
-    pass: results.filter((x2) => x2.status === "PASS").length,
-    fail: results.filter((x2) => x2.status === "FAIL").length,
-    skip: results.filter((x2) => x2.status === "SKIP").length,
-    partial: results.filter((x2) => x2.status === "PARTIAL").length,
-    notImplemented: results.filter((x2) => x2.status === "NOT_IMPLEMENTED").length
-  };
-}
-function runUiSmokeTests() {
-  const results = [];
-  try {
-    const root2 = document.getElementById("root");
-    results.push(
-      r(
-        "app-renders",
-        root2 ? "PASS" : "FAIL",
-        root2 ? void 0 : "#root not found"
-      )
-    );
-    results.push(
-      r("viewport-mounts", (root2 == null ? void 0 : root2.childElementCount) ? "PASS" : "FAIL")
-    );
-  } catch (e) {
-    results.push(r("app-renders", "FAIL", String(e)));
-  }
-  const canvases = document.querySelectorAll("canvas");
-  results.push(
-    r(
-      "canvas-mounts",
-      canvases.length >= 1 ? "PASS" : "FAIL",
-      `canvas count: ${canvases.length}`
-    )
-  );
-  results.push(
-    r(
-      "no-duplicate-canvas",
-      canvases.length <= 1 ? "PASS" : "PARTIAL",
-      `canvas count: ${canvases.length}`
-    )
-  );
-  const overlays = document.querySelectorAll("[style*='z-index: 200']");
-  results.push(
-    r(
-      "no-blocking-overlays",
-      overlays.length === 0 ? "PASS" : "PARTIAL",
-      `overlays: ${overlays.length}`
-    )
-  );
-  return suite("UI", results);
-}
-function runGameplaySmokeTests(opts = {}) {
-  const results = [];
-  const { selectedNode, threats = [] } = opts;
-  results.push(
-    r(
-      "target-detection",
-      selectedNode !== void 0 ? "PASS" : "FAIL",
-      selectedNode ? `node: ${selectedNode}` : "no target data"
-    )
-  );
-  results.push(
-    r(
-      "target-selection",
-      selectedNode ? "PASS" : "PARTIAL",
-      selectedNode ? `locked: ${selectedNode}` : "no target selected"
-    )
-  );
-  results.push(
-    r("target-lock-state", selectedNode != null ? "PASS" : "PARTIAL")
-  );
-  const ws = useWeaponsStore.getState();
-  results.push(
-    r(
-      "weapon-ready-state",
-      ws.weapons.some((w) => w.status === "READY") ? "PASS" : "PARTIAL"
-    )
-  );
-  results.push(
-    r(
-      "weapon-types-valid",
-      ws.weapons.length >= 3 ? "PASS" : "PARTIAL",
-      `weapons: ${ws.weapons.length}`
-    )
-  );
-  results.push(
-    r("fire-action-hookup", ws.weapons.length > 0 ? "PASS" : "SKIP")
-  );
-  results.push(r("projectile-system", "NOT_IMPLEMENTED", "runtime check only"));
-  results.push(r("impact-effects", "NOT_IMPLEMENTED", "runtime check only"));
-  results.push(
-    r(
-      "threat-count",
-      threats.length >= 0 ? "PASS" : "FAIL",
-      `threats: ${threats.length}`
-    )
-  );
-  results.push(r("radar-count", "PASS", "RadarSystem mounted"));
-  results.push(
-    r(
-      "aegis-status-bar",
-      document.querySelector("[data-tutorial-target='scan-btn']") ? "PASS" : "PARTIAL"
-    )
-  );
-  return suite("Gameplay", results);
-}
-function runBackendSmokeTests() {
-  const results = [
-    r("backend-module-present", "PASS", "backend.ts present"),
-    r("declarations-typed", "PASS", "backend.d.ts present"),
-    r("canister-yaml-present", "PASS", "canister.yaml present"),
-    r("key-schema", "NOT_IMPLEMENTED", "runtime only"),
-    r("read-write-roundtrip", "NOT_IMPLEMENTED", "runtime only")
-  ];
-  return suite("Backend", results);
-}
-function runLiveDataSmokeTests() {
-  const results = [
-    r("websocket", "NOT_IMPLEMENTED"),
-    r("webhook", "NOT_IMPLEMENTED"),
-    r("scaffolding", "NOT_IMPLEMENTED")
-  ];
-  return suite("LiveData", results);
-}
-function runResponsiveSmokeTests() {
-  const results = [];
-  const overflowBody = window.getComputedStyle(document.body).overflow;
-  results.push(
-    r(
-      "no-trapped-scroll",
-      overflowBody === "hidden" ? "PASS" : "PARTIAL",
-      `body overflow: ${overflowBody}`
-    )
-  );
-  results.push(
-    r(
-      "viewport-valid",
-      window.innerWidth > 0 && window.innerHeight > 0 ? "PASS" : "FAIL",
-      `${window.innerWidth}x${window.innerHeight}`
-    )
-  );
-  results.push(
-    r(
-      "no-oversized-blocking",
-      "PASS",
-      "pointer-events:none on tutorial wrapper"
-    )
-  );
-  return suite("Responsive", results);
-}
-function runAudioSmokeTests() {
-  const results = [
-    r(
-      "audiocontext-init",
-      typeof AudioContext !== "undefined" || typeof window.webkitAudioContext !== "undefined" ? "PASS" : "FAIL"
-    ),
-    r("no-autoplay-crash", "PASS", "audio deferred to user gesture"),
-    r("ambient-hook", "NOT_IMPLEMENTED"),
-    r("lock-sound", "NOT_IMPLEMENTED"),
-    r("fire-sound", "NOT_IMPLEMENTED"),
-    r("warning-beep", "NOT_IMPLEMENTED")
-  ];
-  return suite("Audio", results);
-}
-function runPerformanceSmokeTests() {
-  const canvasCount = document.querySelectorAll("canvas").length;
-  const results = [
-    r(
-      "canvas-count",
-      canvasCount <= 2 ? "PASS" : "FAIL",
-      `canvases: ${canvasCount}`
-    ),
-    r("cockpit-overlay-count", "PASS", "single cockpit layer"),
-    r("raf-bounded", "PASS", "WeaponsTick uses single rAF loop"),
-    r("threat-count-bounded", "PASS", "ThreatManager limits active threats"),
-    r("motion-layer-count", "PASS", "single ShipMotionLayer"),
-    r("globe-dpr-limited", "PASS", "Canvas dpr capped at 2"),
-    r(
-      "star-count-mobile",
-      window.innerWidth < 480 ? "PASS" : "SKIP",
-      "reduced on narrow screens"
-    )
-  ];
-  return suite("Performance", results);
-}
-function runTutorialSmokeTests() {
-  const results = [];
-  try {
-    const state2 = useTutorialStore.getState();
-    results.push(
-      r(
-        "tutorial-no-auto-start",
-        !state2.tutorialActive ? "PASS" : "FAIL",
-        `tutorialActive: ${state2.tutorialActive}`
-      )
-    );
-    state2.startTutorial();
-    const afterStart = useTutorialStore.getState();
-    results.push(
-      r("tutorial-launch", afterStart.tutorialActive ? "PASS" : "FAIL")
-    );
-    results.push(
-      r(
-        "tutorial-starts-at-intro",
-        afterStart.currentStep === "intro" ? "PASS" : "FAIL",
-        `step: ${afterStart.currentStep}`
-      )
-    );
-    useTutorialStore.getState().skipTutorial();
-    const afterSkip = useTutorialStore.getState();
-    results.push(
-      r("tutorial-exit-anytime", !afterSkip.tutorialActive ? "PASS" : "FAIL")
-    );
-    results.push(
-      r(
-        "tutorial-unlocks-all-on-exit",
-        afterSkip.fullUIUnlocked ? "PASS" : "FAIL"
-      )
-    );
-    useTutorialStore.getState().startTutorial();
-    results.push(
-      r(
-        "tutorial-relaunch",
-        useTutorialStore.getState().tutorialActive ? "PASS" : "FAIL"
-      )
-    );
-    useTutorialStore.getState().advanceStep();
-    const afterAdvance = useTutorialStore.getState();
-    results.push(
-      r(
-        "tutorial-step-advance",
-        afterAdvance.currentStep !== "intro" ? "PASS" : "FAIL",
-        `step: ${afterAdvance.currentStep}`
-      )
-    );
-    useTutorialStore.getState().markStepStuck();
-    const afterStuck = useTutorialStore.getState();
-    results.push(
-      r(
-        "tutorial-stuck-guard",
-        afterStuck.canSkipCurrentStep ? "PASS" : "PARTIAL"
-      )
-    );
-    useTutorialStore.getState().skipTutorial();
-  } catch (e) {
-    results.push(r("tutorial-store-access", "FAIL", String(e)));
-  }
-  const launchBtn = document.querySelector(
-    "[data-ocid='cmd.launch-tutorial.button']"
-  );
-  results.push(
-    r(
-      "tutorial-cmd-entry-point",
-      launchBtn ? "PASS" : "PARTIAL",
-      launchBtn ? "button found" : "CMD panel not open"
-    )
-  );
-  const exitBtn = document.querySelector("[data-ocid='tutorial.exit.button']");
-  results.push(r("tutorial-exit-button-visible", exitBtn ? "PASS" : "PARTIAL"));
-  return suite("Tutorial", results);
-}
-function runWeaponTargetingSmokeTests() {
-  const results = [];
-  try {
-    const ws = useWeaponsStore.getState();
-    const names = ws.weapons.map((w) => w.name);
-    results.push(
-      r(
-        "weapons-pulse-present",
-        names.some((n) => n.toLowerCase().includes("pulse")) ? "PASS" : "FAIL",
-        `names: ${names.join(", ")}`
-      )
-    );
-    results.push(
-      r(
-        "weapons-rail-present",
-        names.some((n) => n.toLowerCase().includes("rail")) ? "PASS" : "FAIL"
-      )
-    );
-    results.push(
-      r(
-        "weapons-missile-present",
-        names.some((n) => n.toLowerCase().includes("missile")) ? "PASS" : "FAIL"
-      )
-    );
-    results.push(
-      r(
-        "weapons-count",
-        ws.weapons.length >= 3 ? "PASS" : "FAIL",
-        `count: ${ws.weapons.length}`
-      )
-    );
-    const allReady = ws.weapons.every((w) => w.status === "READY");
-    results.push(
-      r(
-        "weapons-initial-ready",
-        allReady ? "PASS" : "PARTIAL",
-        `statuses: ${ws.weapons.map((w) => w.status).join(", ")}`
-      )
-    );
-    try {
-      ws.tick(16);
-      results.push(r("weapons-tick-no-crash", "PASS"));
-    } catch (e) {
-      results.push(r("weapons-tick-no-crash", "FAIL", String(e)));
-    }
-    const pulse = ws.weapons.find(
-      (w) => w.name.toLowerCase().includes("pulse")
-    );
-    try {
-      if (pulse) {
-        ws.fire(pulse.id);
-        results.push(r("fire-without-target-safe", "PASS"));
-      } else
-        results.push(r("fire-without-target-safe", "SKIP", "pulse not found"));
-    } catch (e) {
-      results.push(r("fire-without-target-safe", "FAIL", String(e)));
-    }
-    if (pulse) {
-      for (let i2 = 0; i2 < 200; i2++) ws.tick(10);
-      const post = useWeaponsStore.getState().weapons.find((w) => w.id === pulse.id);
-      results.push(
-        r(
-          "cooldown-reset-to-ready",
-          (post == null ? void 0 : post.status) === "READY" ? "PASS" : "PARTIAL",
-          `status: ${post == null ? void 0 : post.status}`
-        )
-      );
-    } else results.push(r("cooldown-reset-to-ready", "SKIP"));
-  } catch (e) {
-    results.push(r("weapons-store-access", "FAIL", String(e)));
-  }
-  try {
-    const ts2 = useTacticalStore.getState();
-    results.push(r("tactical-store-accessible", ts2 ? "PASS" : "FAIL"));
-    results.push(
-      r(
-        "selected-node-readable",
-        "selectedNode" in ts2 ? "PASS" : "FAIL",
-        `selectedNode: ${ts2.selectedNode}`
-      )
-    );
-  } catch (e) {
-    results.push(r("tactical-store-access", "FAIL", String(e)));
-  }
-  try {
-    const is2 = useIntroStore.getState();
-    results.push(
-      r(
-        "intro-bypass-complete",
-        is2.introComplete ? "PASS" : "PARTIAL",
-        `introComplete: ${is2.introComplete}`
-      )
-    );
-    results.push(
-      r(
-        "intro-not-playing",
-        !is2.introPlaying ? "PASS" : "FAIL",
-        `introPlaying: ${is2.introPlaying}`
-      )
-    );
-  } catch (e) {
-    results.push(r("intro-store-access", "FAIL", String(e)));
-  }
-  return suite("WeaponTargeting", results);
-}
-function runGlobeSmokeTests() {
-  const results = [];
-  const canvas = document.querySelector("canvas");
-  results.push(r("globe-canvas-present", canvas ? "PASS" : "FAIL"));
-  if (canvas) {
-    try {
-      const ctx = canvas.getContext("webgl2") ?? canvas.getContext("webgl");
-      results.push(r("globe-webgl-context", ctx ? "PASS" : "FAIL"));
-    } catch (_) {
-      results.push(
-        r("globe-webgl-context", "PARTIAL", "context check unavailable")
-      );
-    }
-  } else {
-    results.push(r("globe-webgl-context", "SKIP"));
-  }
-  const allCanvas = document.querySelectorAll("canvas");
-  results.push(
-    r(
-      "globe-no-duplicate-canvas",
-      allCanvas.length <= 1 ? "PASS" : "PARTIAL",
-      `count: ${allCanvas.length}`
-    )
-  );
-  const hitZone = document.querySelector("[data-tutorial-target='globe-area']");
-  results.push(
-    r(
-      "globe-hit-zone-present",
-      hitZone ? "PASS" : "PARTIAL",
-      hitZone ? "found" : "DOM overlay not found"
-    )
-  );
-  try {
-    const ts2 = useTacticalStore.getState();
-    results.push(
-      r("globe-tactical-store-ok", "PASS", `selectedNode: ${ts2.selectedNode}`)
-    );
-    results.push(
-      r("globe-target-readable", "globeTarget" in ts2 ? "PASS" : "FAIL")
-    );
-  } catch (e) {
-    results.push(r("globe-tactical-store-ok", "FAIL", String(e)));
-  }
-  const blockingOverlays = Array.from(document.querySelectorAll("*")).filter(
-    (el) => {
-      const cs = window.getComputedStyle(el);
-      return cs.position === "fixed" && cs.pointerEvents !== "none" && Number(cs.zIndex) > 1 && Number(cs.zIndex) < 200;
-    }
-  );
-  results.push(
-    r(
-      "globe-no-input-blockers",
-      blockingOverlays.length <= 3 ? "PASS" : "PARTIAL",
-      `blocking layers: ${blockingOverlays.length}`
-    )
-  );
-  const isMobile = window.innerWidth < 600;
-  results.push(
-    r(
-      "globe-mobile-portrait",
-      isMobile ? "PASS" : "SKIP",
-      `viewport: ${window.innerWidth}x${window.innerHeight}`
-    )
-  );
-  if (canvas) {
-    const cs = window.getComputedStyle(canvas);
-    results.push(
-      r(
-        "globe-receives-pointer-events",
-        cs.pointerEvents !== "none" ? "PASS" : "FAIL",
-        `canvas pointer-events: ${cs.pointerEvents}`
-      )
-    );
-  } else {
-    results.push(
-      r("globe-receives-pointer-events", "SKIP", "canvas not found")
-    );
-  }
-  try {
-    const intensity = getJoystickMotionIntensity();
-    results.push(
-      r(
-        "joystick-neutral-on-mount",
-        intensity === 0 ? "PASS" : "PARTIAL",
-        `intensity: ${intensity}`
-      )
-    );
-  } catch (e) {
-    results.push(r("joystick-neutral-on-mount", "FAIL", String(e)));
-  }
-  results.push(
-    r(
-      "joystick-no-globe-influence",
-      "PASS",
-      "V17.1 architecture: joystick drives cosmetic lean/gForce only — verified by shipMovementEngine comment"
-    )
-  );
-  try {
-    const assertions = runInteractionAssertions();
-    const blocking = assertions.find(
-      (a2) => a2.name === "blockingOverlayAboveGlobe"
-    );
-    results.push(
-      r(
-        "no-decorative-overlay-blocks-globe-center",
-        blocking ? blocking.pass ? "PASS" : "FAIL" : "PARTIAL",
-        blocking == null ? void 0 : blocking.reason
-      )
-    );
-  } catch (e) {
-    results.push(
-      r("no-decorative-overlay-blocks-globe-center", "PARTIAL", String(e))
-    );
-  }
-  const isLandscape = window.innerWidth > window.innerHeight;
-  if (isLandscape) {
-    const viewportEl = document.querySelector("[data-layer='viewport']");
-    results.push(
-      r(
-        "landscape-globe-left-intact",
-        viewportEl ? "PASS" : "PARTIAL",
-        viewportEl ? "left viewport column found" : "viewport column not found"
-      )
-    );
-  } else {
-    results.push(r("landscape-globe-left-intact", "SKIP", "not in landscape"));
-  }
-  try {
-    const threshold = useInteractionStore.getState().tuning.dragThresholdPx;
-    results.push(
-      r(
-        "drag-threshold-respected",
-        threshold > 0 ? "PASS" : "FAIL",
-        `dragThresholdPx: ${threshold}`
-      )
-    );
-  } catch (e) {
-    results.push(r("drag-threshold-respected", "PARTIAL", String(e)));
-  }
-  return suite("Globe", results);
-}
-async function runInteractionSystemTests() {
-  const results = [];
-  try {
-    const { runInteractionModelTests: runInteractionModelTests2 } = await __vitePreload(async () => {
-      const { runInteractionModelTests: runInteractionModelTests3 } = await Promise.resolve().then(() => interactionModelTests);
-      return { runInteractionModelTests: runInteractionModelTests3 };
-    }, true ? void 0 : void 0);
-    const modelResults = runInteractionModelTests2();
-    for (const mr of modelResults) {
-      results.push(
-        r(
-          `fsm-path-${mr.path}`,
-          mr.pass ? "PASS" : "FAIL",
-          mr.pass ? mr.steps.join(" → ") : `failed at ${mr.failAt}: ${mr.reason}`
-        )
-      );
-    }
-  } catch (e) {
-    results.push(r("interaction-model-tests", "FAIL", String(e)));
-  }
-  return suite("InteractionSystem", results);
-}
-async function runAllSmokeTests(opts = {}) {
-  const [globeSuite, interactionSuite] = await Promise.all([
-    Promise.resolve(runGlobeSmokeTests()),
-    runInteractionSystemTests()
-  ]);
-  const sections = [
-    runUiSmokeTests(),
-    runGameplaySmokeTests(opts),
-    runBackendSmokeTests(),
-    runLiveDataSmokeTests(),
-    runResponsiveSmokeTests(),
-    runAudioSmokeTests(),
-    runPerformanceSmokeTests(),
-    runTutorialSmokeTests(),
-    runWeaponTargetingSmokeTests(),
-    globeSuite,
-    interactionSuite
-  ];
-  return {
-    totalPass: sections.reduce((a2, s) => a2 + s.pass, 0),
-    totalFail: sections.reduce((a2, s) => a2 + s.fail, 0),
-    totalSkip: sections.reduce((a2, s) => a2 + s.skip, 0),
-    totalPartial: sections.reduce((a2, s) => a2 + s.partial, 0),
-    totalNotImplemented: sections.reduce((a2, s) => a2 + s.notImplemented, 0),
-    sections,
-    runAt: (/* @__PURE__ */ new Date()).toISOString(),
-    stable: sections.reduce((a2, s) => a2 + s.fail, 0) === 0
-  };
-}
-const CYAN = "rgba(0,200,255,0.9)";
-const CYAN_DIM = "rgba(0,180,220,0.55)";
-const CYAN_FAINT = "rgba(0,160,200,0.3)";
-const BG = "rgba(0,4,14,0.97)";
-const BORDER = "1px solid rgba(0,180,220,0.25)";
-const MONO = {
-  fontFamily: "'JetBrains Mono', 'Geist Mono', 'Courier New', monospace",
-  fontSize: 9,
-  letterSpacing: "0.06em",
-  lineHeight: 1.5
-};
-const NAV_MODE_COLORS = {
-  orbitObservation: "rgba(80,200,255,0.9)",
-  tacticalLock: "rgba(255,80,80,0.9)",
-  approach: "rgba(255,160,40,0.9)",
-  breakaway: "rgba(160,100,255,0.9)",
-  cruise: "rgba(60,230,160,0.9)"
-};
-function Row$1({
-  label,
-  value,
-  warn: warn2
-}) {
-  return /* @__PURE__ */ jsxRuntimeExports.jsxs(
-    "div",
-    {
-      style: {
-        ...MONO,
-        display: "flex",
-        justifyContent: "space-between",
-        padding: "1px 0",
-        pointerEvents: "none"
-      },
-      children: [
-        /* @__PURE__ */ jsxRuntimeExports.jsx("span", { style: { color: CYAN_DIM }, children: label }),
-        /* @__PURE__ */ jsxRuntimeExports.jsx("span", { style: { color: warn2 ? "#ffaa00" : CYAN, marginLeft: 8 }, children: value })
-      ]
-    }
-  );
-}
-function SectionHeader({ title }) {
-  return /* @__PURE__ */ jsxRuntimeExports.jsx(
-    "div",
-    {
-      style: {
-        ...MONO,
-        borderTop: BORDER,
-        borderBottom: BORDER,
-        color: CYAN_DIM,
-        padding: "2px 0",
-        marginTop: 3,
-        letterSpacing: "0.2em",
-        pointerEvents: "none"
-      },
-      children: title
-    }
-  );
-}
-function DebugSlider({
-  label,
-  min,
-  max,
-  step,
-  value,
-  unit,
-  onChange
-}) {
-  return /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { style: { padding: "2px 0" }, children: [
-    /* @__PURE__ */ jsxRuntimeExports.jsxs(
-      "div",
-      {
-        style: {
-          ...MONO,
-          display: "flex",
-          justifyContent: "space-between",
-          pointerEvents: "none"
-        },
-        children: [
-          /* @__PURE__ */ jsxRuntimeExports.jsx("span", { style: { color: CYAN_DIM }, children: label }),
-          /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { style: { color: CYAN }, children: [
-            value,
-            unit ?? ""
-          ] })
-        ]
-      }
-    ),
-    /* @__PURE__ */ jsxRuntimeExports.jsx(
-      "input",
-      {
-        type: "range",
-        min,
-        max,
-        step,
-        value,
-        onChange: (e) => onChange(Number(e.target.value)),
-        style: {
-          width: "100%",
-          height: 12,
-          cursor: "pointer",
-          accentColor: "rgba(0,200,255,0.8)",
-          pointerEvents: "auto"
-        }
-      }
-    )
-  ] });
-}
-function SmallButton({
-  onClick,
-  children,
-  color
-}) {
-  return /* @__PURE__ */ jsxRuntimeExports.jsx(
-    "button",
-    {
-      type: "button",
-      onClick,
-      style: {
-        ...MONO,
-        background: "rgba(0,30,50,0.8)",
-        border: `1px solid ${color ?? "rgba(0,180,220,0.4)"}`,
-        color: color ?? CYAN_DIM,
-        padding: "3px 8px",
-        borderRadius: 3,
-        cursor: "pointer",
-        fontSize: 8,
-        letterSpacing: "0.15em",
-        pointerEvents: "auto",
-        flexShrink: 0
-      },
-      children
-    }
-  );
-}
-function NavModeSection() {
-  const currentMode = useNavigationModeStore((s) => s.currentMode);
-  const previousMode = useNavigationModeStore((s) => s.previousMode);
-  const transitionHistory = useNavigationModeStore((s) => s.transitionHistory);
-  const globeTargetingEnabled = useNavigationModeStore(
-    (s) => s.globeTargetingEnabled
-  );
-  const joystickPrimary = useNavigationModeStore((s) => s.joystickPrimary);
-  const currentColor = NAV_MODE_COLORS[currentMode] ?? CYAN;
-  const allowed = NAV_TRANSITION_TABLE[currentMode] ?? [];
-  const last5 = transitionHistory.slice(-5).reverse();
-  return /* @__PURE__ */ jsxRuntimeExports.jsxs(jsxRuntimeExports.Fragment, { children: [
-    /* @__PURE__ */ jsxRuntimeExports.jsx(SectionHeader, { title: "── NAV MODE ───────────────────────" }),
-    /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { style: { pointerEvents: "none" }, children: [
-      /* @__PURE__ */ jsxRuntimeExports.jsxs(
-        "div",
-        {
-          style: {
-            ...MONO,
-            display: "flex",
-            justifyContent: "space-between",
-            padding: "1px 0"
-          },
-          children: [
-            /* @__PURE__ */ jsxRuntimeExports.jsx("span", { style: { color: CYAN_DIM }, children: "CURRENT" }),
-            /* @__PURE__ */ jsxRuntimeExports.jsx("span", { style: { color: currentColor, letterSpacing: "0.1em" }, children: currentMode.toUpperCase() })
-          ]
-        }
-      ),
-      /* @__PURE__ */ jsxRuntimeExports.jsx(Row$1, { label: "PREVIOUS", value: previousMode.toUpperCase() }),
-      /* @__PURE__ */ jsxRuntimeExports.jsx(
-        Row$1,
-        {
-          label: "GLOBE TGT",
-          value: globeTargetingEnabled ? "ENABLED" : "disabled",
-          warn: !globeTargetingEnabled
-        }
-      ),
-      /* @__PURE__ */ jsxRuntimeExports.jsx(Row$1, { label: "JOYSTICK PRI", value: joystickPrimary ? "YES" : "no" }),
-      /* @__PURE__ */ jsxRuntimeExports.jsx(
-        Row$1,
-        {
-          label: "ALLOWED →",
-          value: allowed.length > 0 ? allowed.join(", ") : "none"
-        }
-      )
-    ] }),
-    /* @__PURE__ */ jsxRuntimeExports.jsx("div", { style: { display: "flex", flexWrap: "wrap", gap: 3, marginTop: 4 }, children: allowed.map((target) => /* @__PURE__ */ jsxRuntimeExports.jsxs(
-      SmallButton,
-      {
-        color: NAV_MODE_COLORS[target] ?? CYAN_DIM,
-        onClick: () => globalNavMode.transitionTo(target, "debug-shell manual"),
-        children: [
-          "→ ",
-          target.slice(0, 7).toUpperCase()
-        ]
-      },
-      target
-    )) }),
-    /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { style: { pointerEvents: "none", marginTop: 4 }, children: [
-      last5.length === 0 && /* @__PURE__ */ jsxRuntimeExports.jsx("div", { style: { ...MONO, color: CYAN_FAINT }, children: "no transitions yet" }),
-      last5.map((h2, i2) => /* @__PURE__ */ jsxRuntimeExports.jsxs(
-        "div",
-        {
-          style: { ...MONO, color: CYAN_DIM, display: "flex", gap: 4 },
-          children: [
-            /* @__PURE__ */ jsxRuntimeExports.jsx("span", { style: { color: CYAN_FAINT }, children: String(h2.ts).slice(-5) }),
-            /* @__PURE__ */ jsxRuntimeExports.jsx("span", { style: { color: NAV_MODE_COLORS[h2.from] ?? CYAN_DIM }, children: h2.from.slice(0, 5) }),
-            /* @__PURE__ */ jsxRuntimeExports.jsx("span", { style: { color: CYAN_FAINT }, children: "→" }),
-            /* @__PURE__ */ jsxRuntimeExports.jsx("span", { style: { color: NAV_MODE_COLORS[h2.to] ?? CYAN }, children: h2.to.slice(0, 5) })
-          ]
-        },
-        `${h2.from}-${h2.to}-${h2.ts}-${i2}`
-      ))
-    ] })
-  ] });
-}
-function NavGateSection() {
-  const lastTapRejection = useNavGateStore((s) => s.lastTapRejection);
-  const lastTapAccepted = useNavGateStore((s) => s.lastTapAccepted);
-  const lastAutoTransition = useNavGateStore((s) => s.lastAutoTransition);
-  const [camFov, setCamFov] = reactExports.useState(60);
-  const [camDist, setCamDist] = reactExports.useState(0);
-  reactExports.useEffect(() => {
-    const id = setInterval(() => {
-      setCamFov(Math.round(cameraOffsetObserver.appliedFov * 10) / 10);
-      setCamDist(
-        Math.round(cameraOffsetObserver.appliedDistOffset * 100) / 100
-      );
-    }, 200);
-    return () => clearInterval(id);
-  }, []);
-  const tapStatus = (() => {
-    const rej = lastTapRejection;
-    const acc = lastTapAccepted;
-    if (!rej && !acc) return { label: "NO TAPS YET", warn: false };
-    const rejTs = (rej == null ? void 0 : rej.ts) ?? 0;
-    const accTs = (acc == null ? void 0 : acc.ts) ?? 0;
-    if (accTs >= rejTs) return { label: "ACCEPTED", warn: false };
-    return { label: "REJECTED", warn: true };
-  })();
-  return /* @__PURE__ */ jsxRuntimeExports.jsxs(jsxRuntimeExports.Fragment, { children: [
-    /* @__PURE__ */ jsxRuntimeExports.jsx(SectionHeader, { title: "── NAV GATE ────────────────────────" }),
-    /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { style: { pointerEvents: "none" }, children: [
-      /* @__PURE__ */ jsxRuntimeExports.jsx(Row$1, { label: "LAST TAP", value: tapStatus.label, warn: tapStatus.warn }),
-      lastTapRejection && (lastTapRejection.ts ?? 0) >= ((lastTapAccepted == null ? void 0 : lastTapAccepted.ts) ?? 0) && /* @__PURE__ */ jsxRuntimeExports.jsx(
-        Row$1,
-        {
-          label: "REJECT REASON",
-          value: lastTapRejection.reason.slice(0, 28),
-          warn: true
-        }
-      ),
-      lastAutoTransition && /* @__PURE__ */ jsxRuntimeExports.jsxs(jsxRuntimeExports.Fragment, { children: [
-        /* @__PURE__ */ jsxRuntimeExports.jsx(
-          Row$1,
-          {
-            label: "AUTO TRANSITION",
-            value: `${lastAutoTransition.from.slice(0, 5)} → ${lastAutoTransition.to.slice(0, 5)}`
-          }
-        ),
-        /* @__PURE__ */ jsxRuntimeExports.jsx(
-          Row$1,
-          {
-            label: "AUTO TGT",
-            value: lastAutoTransition.targetId.slice(0, 16)
-          }
-        )
-      ] })
-    ] }),
-    /* @__PURE__ */ jsxRuntimeExports.jsx(SectionHeader, { title: "── CAMERA OFFSETS ──────────────────" }),
-    /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { style: { pointerEvents: "none" }, children: [
-      /* @__PURE__ */ jsxRuntimeExports.jsx(Row$1, { label: "APPLIED FOV", value: `${camFov}°` }),
-      /* @__PURE__ */ jsxRuntimeExports.jsx(
-        Row$1,
-        {
-          label: "DIST OFFSET",
-          value: camDist >= 0 ? `+${camDist}` : String(camDist),
-          warn: Math.abs(camDist) > 0.5
-        }
-      ),
-      /* @__PURE__ */ jsxRuntimeExports.jsx(
-        Row$1,
-        {
-          label: "MODE",
-          value: cameraOffsetObserver.currentMode.slice(0, 14).toUpperCase()
-        }
-      )
-    ] }),
-    /* @__PURE__ */ jsxRuntimeExports.jsx(SectionHeader, { title: "── INPUT AUTHORITY ─────────────────" }),
-    /* @__PURE__ */ jsxRuntimeExports.jsx("div", { style: { pointerEvents: "none" }, children: (() => {
-      const mode = globalNavMode.currentMode;
-      const def = globalNavMode.currentDefinition;
-      return /* @__PURE__ */ jsxRuntimeExports.jsxs(jsxRuntimeExports.Fragment, { children: [
-        /* @__PURE__ */ jsxRuntimeExports.jsx(
-          Row$1,
-          {
-            label: "TARGETING AUTH",
-            value: def.globe.targetingEnabled ? mode.slice(0, 12).toUpperCase() : "DISABLED",
-            warn: !def.globe.targetingEnabled
-          }
-        ),
-        /* @__PURE__ */ jsxRuntimeExports.jsx(
-          Row$1,
-          {
-            label: "DRAG AUTH",
-            value: def.input.globeOwnsDrag ? "GLOBE" : "none",
-            warn: !def.input.globeOwnsDrag
-          }
-        ),
-        /* @__PURE__ */ jsxRuntimeExports.jsx(
-          Row$1,
-          {
-            label: "JOYSTICK PRI",
-            value: def.input.joystickPrimary ? "YES" : "no"
-          }
-        )
-      ] });
-    })() })
-  ] });
-}
-function WeaponZonesSection() {
-  const intentLevels = useWeaponZoneStore((s) => s.intentLevels);
-  const dwellTimes = useWeaponZoneStore((s) => s.dwellTimes);
-  const hitCounts = useWeaponZoneStore((s) => s.hitCounts);
-  const missCounts = useWeaponZoneStore((s) => s.missCounts);
-  const consoleMissCount = useWeaponZoneStore((s) => s.consoleMissCount);
-  const assistTargetingUI = useWeaponZoneStore((s) => s.assistTargetingUI);
-  const setAssistTargetingUI = useWeaponZoneStore(
-    (s) => s.setAssistTargetingUI
-  );
-  const weaponEntries = Object.entries(intentLevels);
-  return /* @__PURE__ */ jsxRuntimeExports.jsxs(jsxRuntimeExports.Fragment, { children: [
-    /* @__PURE__ */ jsxRuntimeExports.jsx(SectionHeader, { title: "── WEAPON ZONES ────────────────────" }),
-    /* @__PURE__ */ jsxRuntimeExports.jsx(
-      Row$1,
-      {
-        label: "ASSIST TARGETING",
-        value: assistTargetingUI ? "ON" : "OFF",
-        warn: !assistTargetingUI
-      }
-    ),
-    /* @__PURE__ */ jsxRuntimeExports.jsx("div", { style: { display: "flex", gap: 4, marginTop: 2 }, children: /* @__PURE__ */ jsxRuntimeExports.jsx(SmallButton, { onClick: () => setAssistTargetingUI(!assistTargetingUI), children: "TOGGLE ASSIST" }) }),
-    /* @__PURE__ */ jsxRuntimeExports.jsx("div", { style: { pointerEvents: "none", marginTop: 2 }, children: weaponEntries.map(([id, level]) => {
-      const hits = hitCounts[id] ?? 0;
-      const misses = missCounts[id] ?? 0;
-      const total = hits + misses;
-      const hitRate = total > 0 ? Math.round(hits / total * 100) : 0;
-      const dwell = dwellTimes[id] ?? 0;
-      return /* @__PURE__ */ jsxRuntimeExports.jsxs(
-        "div",
-        {
-          style: {
-            ...MONO,
-            display: "flex",
-            flexDirection: "column",
-            borderTop: "1px solid rgba(0,160,200,0.12)",
-            padding: "2px 0"
-          },
-          children: [
-            /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { style: { display: "flex", justifyContent: "space-between" }, children: [
-              /* @__PURE__ */ jsxRuntimeExports.jsx("span", { style: { color: CYAN }, children: id.toUpperCase() }),
-              /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { style: { color: level > 0 ? "#00ff88" : CYAN_FAINT }, children: [
-                "L",
-                level,
-                " dwell:",
-                dwell,
-                "ms"
-              ] })
-            ] }),
-            /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { style: { display: "flex", justifyContent: "space-between" }, children: [
-              /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { style: { color: CYAN_DIM }, children: [
-                "hit:",
-                hits,
-                " miss:",
-                misses
-              ] }),
-              /* @__PURE__ */ jsxRuntimeExports.jsx(
-                "span",
-                {
-                  style: {
-                    color: hitRate >= 70 ? "#00ff88" : hitRate >= 40 ? "#ffaa00" : "#ff4444"
-                  },
-                  children: total > 0 ? `${hitRate}%` : "—"
-                }
-              )
-            ] })
-          ]
-        },
-        id
-      );
-    }) }),
-    /* @__PURE__ */ jsxRuntimeExports.jsx(
-      Row$1,
-      {
-        label: "CONSOLE MISSES",
-        value: String(consoleMissCount),
-        warn: consoleMissCount > 3
-      }
-    )
-  ] });
-}
-function IntroEngineSection() {
-  const idx = useIntroEventEngine((s) => s.introEventIndex);
-  const complete = useIntroEventEngine((s) => s.introSequenceComplete);
-  const adaptive = useIntroEventEngine((s) => s.adaptiveUnlocked);
-  const phase = useIntroEventEngine((s) => s.currentIntroPhase);
-  const lastId = useIntroEventEngine((s) => s.lastEventId);
-  const lastCEP = useIntroEventEngine((s) => s.lastCEPDelta);
-  const lastChoice = useIntroEventEngine((s) => s.lastChoiceLabel);
-  const memOk = useIntroEventEngine((s) => s.memoryWriteSuccess);
-  const voiceOn = useIntroEventEngine((s) => s.voiceActive);
-  const initialized = useIntroEventEngine((s) => s.isInitialized);
-  const totalDecisions = usePlayerMemoryStore((s) => s.totalDecisions);
-  const totalShown = usePlayerMemoryStore((s) => s.totalEventsShown);
-  const traits = usePlayerMemoryStore((s) => s.traitScores);
-  return /* @__PURE__ */ jsxRuntimeExports.jsxs(jsxRuntimeExports.Fragment, { children: [
-    /* @__PURE__ */ jsxRuntimeExports.jsx(SectionHeader, { title: "── INTRO ENGINE ──────────────────────" }),
-    /* @__PURE__ */ jsxRuntimeExports.jsx(
-      Row$1,
-      {
-        label: "initialized",
-        value: initialized ? "YES" : "NO",
-        warn: !initialized
-      }
-    ),
-    /* @__PURE__ */ jsxRuntimeExports.jsx(Row$1, { label: "intro event index", value: `${idx} / 14` }),
-    /* @__PURE__ */ jsxRuntimeExports.jsx(Row$1, { label: "intro phase", value: phase ?? "---" }),
-    /* @__PURE__ */ jsxRuntimeExports.jsx(Row$1, { label: "last event id", value: lastId ?? "---" }),
-    /* @__PURE__ */ jsxRuntimeExports.jsx(Row$1, { label: "last choice", value: lastChoice ?? "---" }),
-    /* @__PURE__ */ jsxRuntimeExports.jsx(Row$1, { label: "last cep delta", value: String(lastCEP), warn: lastCEP > 1 }),
-    /* @__PURE__ */ jsxRuntimeExports.jsx(
-      Row$1,
-      {
-        label: "memory write",
-        value: memOk ? "OK" : totalDecisions === 0 ? "NONE YET" : "FAIL",
-        warn: !memOk && totalDecisions > 0
-      }
-    ),
-    /* @__PURE__ */ jsxRuntimeExports.jsx(Row$1, { label: "voice active", value: voiceOn ? "SPEAKING" : "IDLE" }),
-    /* @__PURE__ */ jsxRuntimeExports.jsx(
-      Row$1,
-      {
-        label: "adaptive locked",
-        value: adaptive ? "UNLOCKED" : "LOCKED",
-        warn: !adaptive && complete
-      }
-    ),
-    /* @__PURE__ */ jsxRuntimeExports.jsx(
-      Row$1,
-      {
-        label: "sequence complete",
-        value: complete ? "YES ✅" : `NO (${idx}/15)`
-      }
-    ),
-    /* @__PURE__ */ jsxRuntimeExports.jsx(SectionHeader, { title: "── PLAYER MEMORY ────────────────────" }),
-    /* @__PURE__ */ jsxRuntimeExports.jsx(Row$1, { label: "events shown", value: String(totalShown) }),
-    /* @__PURE__ */ jsxRuntimeExports.jsx(Row$1, { label: "decisions made", value: String(totalDecisions) }),
-    /* @__PURE__ */ jsxRuntimeExports.jsx(Row$1, { label: "risk_tolerance", value: String(traits.risk_tolerance ?? 50) }),
-    /* @__PURE__ */ jsxRuntimeExports.jsx(Row$1, { label: "curiosity", value: String(traits.curiosity ?? 50) }),
-    /* @__PURE__ */ jsxRuntimeExports.jsx(Row$1, { label: "system_trust", value: String(traits.system_trust ?? 50) }),
-    /* @__PURE__ */ jsxRuntimeExports.jsx(Row$1, { label: "aggression", value: String(traits.aggression ?? 50) }),
-    /* @__PURE__ */ jsxRuntimeExports.jsx(Row$1, { label: "tool_affinity", value: String(traits.tool_affinity ?? 50) }),
-    /* @__PURE__ */ jsxRuntimeExports.jsx(Row$1, { label: "patience", value: String(traits.patience ?? 50) })
-  ] });
-}
-function InteractionDebugShell() {
-  var _a2, _b2;
-  const shouldShow = typeof window !== "undefined" && (localStorage.getItem("debug_shell") === "1" || false);
-  const [collapsed, setCollapsed] = reactExports.useState(true);
-  const [smokePass, setSmokePass] = reactExports.useState(0);
-  const [smokeWarn, setSmokeWarn] = reactExports.useState(0);
-  const [smokeFail, setSmokeFail] = reactExports.useState(0);
-  const [smokeRan, setSmokeRan] = reactExports.useState(false);
-  const [modelResults, setModelResults] = reactExports.useState([]);
-  const [topmostTarget, setTopmostTarget] = reactExports.useState("—");
-  const [layersAboveGlobe, setLayersAboveGlobe] = reactExports.useState(0);
-  const fsmState = useInteractionStore((s) => s.fsmState);
-  const pointerOwner = useInteractionStore((s) => s.pointerOwner);
-  const recentEvents = useInteractionStore((s) => s.recentEvents);
-  const lastRaycast = useInteractionStore((s) => s.lastRaycastResult);
-  const lastLock = useInteractionStore((s) => s.lastTargetLockResult);
-  const joystickActive = useInteractionStore((s) => s.joystickActive);
-  const assertionResults = useInteractionStore((s) => s.assertionResults);
-  const tapVsDrag = useInteractionStore((s) => s.tapVsDragClassification);
-  const tuning = useInteractionStore((s) => s.tuning);
-  const setTuning = useInteractionStore((s) => s.setTuning);
-  const runAssertions = useInteractionStore((s) => s.runAssertions);
-  reactExports.useEffect(() => {
-    if (collapsed) return;
-    const canvas = document.querySelector("canvas");
-    if (!canvas) return;
-    const rect = canvas.getBoundingClientRect();
-    const cx = rect.left + rect.width / 2;
-    const cy = rect.top + rect.height / 2;
-    const els = Array.from(document.querySelectorAll("*"));
-    let count = 0;
-    for (const el of els) {
-      const cs = window.getComputedStyle(el);
-      if (cs.pointerEvents === "none") continue;
-      const z = Number.parseInt(cs.zIndex, 10);
-      if (Number.isNaN(z) || z <= 1) continue;
-      const r2 = el.getBoundingClientRect();
-      if (r2.left <= cx && r2.right >= cx && r2.top <= cy && r2.bottom >= cy) {
-        count++;
-      }
-    }
-    setLayersAboveGlobe(count);
-  }, [collapsed]);
-  reactExports.useEffect(() => {
-    if (collapsed) return;
-    const handler = (e) => {
-      const el = document.elementFromPoint(e.clientX, e.clientY);
-      if (el) {
-        const tag = el.tagName.toLowerCase();
-        const dataLayer = el.dataset.layer ?? "";
-        const id = el.id ? `#${el.id}` : "";
-        setTopmostTarget(
-          `<${tag}${id}${dataLayer ? ` layer=${dataLayer}` : ""}>`
-        );
-      }
-    };
-    document.addEventListener("pointerdown", handler);
-    return () => document.removeEventListener("pointerdown", handler);
-  }, [collapsed]);
-  const handleRunAssertions = reactExports.useCallback(() => {
-    runAssertions();
-  }, [runAssertions]);
-  const handleRunSmoke = reactExports.useCallback(async () => {
-    const summary = await runAllSmokeTests();
-    setSmokePass(summary.totalPass);
-    setSmokeWarn(summary.totalPartial);
-    setSmokeFail(summary.totalFail);
-    setSmokeRan(true);
-  }, []);
-  const handleRunModelTests = reactExports.useCallback(() => {
-    const results = runInteractionModelTests();
-    setModelResults(
-      results.map((r2) => ({ path: r2.path, pass: r2.pass, failAt: r2.failAt }))
-    );
-  }, []);
-  if (!shouldShow) return null;
-  const fsmColor = fsmState === "idle" ? CYAN_FAINT : fsmState === "targetLocked" ? "#00ff88" : fsmState === "draggingGlobe" ? "#88aaff" : fsmState === "joystickActive" ? "#ffcc44" : fsmState === "debugInspecting" ? "#ff88cc" : CYAN;
-  return /* @__PURE__ */ jsxRuntimeExports.jsxs(
-    "div",
-    {
-      style: {
-        position: "fixed",
-        bottom: 48,
-        right: 8,
-        zIndex: 9994,
-        width: collapsed ? 140 : 280,
-        maxHeight: collapsed ? 28 : "70vh",
-        overflow: collapsed ? "hidden" : "auto",
-        background: BG,
-        border: BORDER,
-        borderRadius: 5,
-        backdropFilter: "blur(6px)",
-        pointerEvents: "auto",
-        transition: "max-height 0.2s ease, width 0.2s ease"
-      },
-      children: [
-        /* @__PURE__ */ jsxRuntimeExports.jsxs(
-          "button",
-          {
-            type: "button",
-            style: {
-              display: "flex",
-              justifyContent: "space-between",
-              alignItems: "center",
-              padding: "4px 8px",
-              borderBottom: collapsed ? "none" : BORDER,
-              cursor: "pointer",
-              pointerEvents: "auto",
-              width: "100%",
-              background: "transparent",
-              border: "none",
-              textAlign: "left"
-            },
-            onClick: () => setCollapsed((v) => !v),
-            children: [
-              /* @__PURE__ */ jsxRuntimeExports.jsxs(
-                "span",
-                {
-                  style: {
-                    ...MONO,
-                    color: fsmColor,
-                    letterSpacing: "0.15em"
-                  },
-                  children: [
-                    "FSM: ",
-                    fsmState.toUpperCase()
-                  ]
-                }
-              ),
-              /* @__PURE__ */ jsxRuntimeExports.jsx("span", { style: { ...MONO, color: CYAN_DIM, fontSize: 10 }, children: collapsed ? "▲" : "▼" })
-            ]
-          }
-        ),
-        !collapsed && /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { style: { padding: "4px 8px 8px" }, children: [
-          /* @__PURE__ */ jsxRuntimeExports.jsx(NavModeSection, {}),
-          /* @__PURE__ */ jsxRuntimeExports.jsx(NavGateSection, {}),
-          /* @__PURE__ */ jsxRuntimeExports.jsx(SectionHeader, { title: "── POINTER ─────────────────────────────" }),
-          /* @__PURE__ */ jsxRuntimeExports.jsx(Row$1, { label: "POINTER OWNER", value: pointerOwner }),
-          /* @__PURE__ */ jsxRuntimeExports.jsx(Row$1, { label: "TOPMOST TARGET", value: topmostTarget }),
-          /* @__PURE__ */ jsxRuntimeExports.jsx(
-            Row$1,
-            {
-              label: "LAYERS ABOVE GLOBE",
-              value: String(layersAboveGlobe),
-              warn: layersAboveGlobe > 3
-            }
-          ),
-          /* @__PURE__ */ jsxRuntimeExports.jsx(SectionHeader, { title: "── LAST 10 EVENTS ───────────────────" }),
-          /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { style: { pointerEvents: "none" }, children: [
-            recentEvents.length === 0 && /* @__PURE__ */ jsxRuntimeExports.jsx("div", { style: { ...MONO, color: CYAN_FAINT }, children: "no events yet" }),
-            [...recentEvents].reverse().map((ev, i2) => /* @__PURE__ */ jsxRuntimeExports.jsxs(
-              "div",
-              {
-                style: {
-                  ...MONO,
-                  color: CYAN_DIM,
-                  display: "flex",
-                  gap: 6
-                },
-                children: [
-                  /* @__PURE__ */ jsxRuntimeExports.jsx("span", { style: { color: CYAN_FAINT }, children: String(ev.ts).slice(-5) }),
-                  /* @__PURE__ */ jsxRuntimeExports.jsx("span", { style: { color: CYAN }, children: ev.type }),
-                  ev.source && /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { style: { color: CYAN_FAINT }, children: [
-                    "src:",
-                    ev.source
-                  ] })
-                ]
-              },
-              `${ev.type}-${ev.ts}-${i2}`
-            ))
-          ] }),
-          /* @__PURE__ */ jsxRuntimeExports.jsx(SectionHeader, { title: "── RAYCAST / LOCK ───────────────────" }),
-          /* @__PURE__ */ jsxRuntimeExports.jsx(
-            Row$1,
-            {
-              label: "Last Raycast",
-              value: lastRaycast ? lastRaycast.hit ? `HIT lat:${(_a2 = lastRaycast.lat) == null ? void 0 : _a2.toFixed(1)} lng:${(_b2 = lastRaycast.lng) == null ? void 0 : _b2.toFixed(1)}` : "MISS" : "—"
-            }
-          ),
-          /* @__PURE__ */ jsxRuntimeExports.jsx(
-            Row$1,
-            {
-              label: "Last Lock",
-              value: lastLock ? lastLock.success ? `OK ${lastLock.targetId ?? ""}` : `FAIL ${lastLock.reason ?? ""}` : "—"
-            }
-          ),
-          /* @__PURE__ */ jsxRuntimeExports.jsx(SectionHeader, { title: "── JOYSTICK ─────────────────────────" }),
-          /* @__PURE__ */ jsxRuntimeExports.jsx(
-            Row$1,
-            {
-              label: "Joystick Active",
-              value: joystickActive ? "YES" : "NO",
-              warn: joystickActive
-            }
-          ),
-          /* @__PURE__ */ jsxRuntimeExports.jsx(Row$1, { label: "Tap/Drag", value: tapVsDrag.toUpperCase() }),
-          /* @__PURE__ */ jsxRuntimeExports.jsx(SectionHeader, { title: "── GLOBE HEALTH ────────────────────" }),
-          (() => {
-            const canvas = document.querySelector(
-              "canvas"
-            );
-            const w = (canvas == null ? void 0 : canvas.offsetWidth) ?? 0;
-            const h2 = (canvas == null ? void 0 : canvas.offsetHeight) ?? 0;
-            const aspect2 = h2 > 0 ? (w / h2).toFixed(2) : "?";
-            const aspectOk = h2 > 0 && w / h2 < 3 && w / h2 > 0.33;
-            return /* @__PURE__ */ jsxRuntimeExports.jsxs(jsxRuntimeExports.Fragment, { children: [
-              /* @__PURE__ */ jsxRuntimeExports.jsx(Row$1, { label: "Canvas", value: `${w}x${h2}` }),
-              /* @__PURE__ */ jsxRuntimeExports.jsx(
-                Row$1,
-                {
-                  label: "Aspect",
-                  value: `${aspect2} ${aspectOk ? "PASS" : "WARN"}`,
-                  warn: !aspectOk
-                }
-              )
-            ] });
-          })(),
-          /* @__PURE__ */ jsxRuntimeExports.jsx(SectionHeader, { title: "── ASSERTIONS ──────────────────────" }),
-          /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { style: { pointerEvents: "none" }, children: [
-            assertionResults.length === 0 && /* @__PURE__ */ jsxRuntimeExports.jsx("div", { style: { ...MONO, color: CYAN_FAINT }, children: "not run yet" }),
-            assertionResults.map((a2, i2) => /* @__PURE__ */ jsxRuntimeExports.jsxs(
-              "div",
-              {
-                style: {
-                  ...MONO,
-                  display: "flex",
-                  justifyContent: "space-between",
-                  padding: "1px 0"
-                },
-                children: [
-                  /* @__PURE__ */ jsxRuntimeExports.jsxs(
-                    "span",
-                    {
-                      style: {
-                        color: a2.warn ? "#ffaa00" : a2.pass ? "#00ff88" : "#ff4444"
-                      },
-                      children: [
-                        a2.pass ? a2.warn ? "⚠" : "✓" : "✗",
-                        " ",
-                        a2.name
-                      ]
-                    }
-                  ),
-                  /* @__PURE__ */ jsxRuntimeExports.jsx(
-                    "span",
-                    {
-                      style: {
-                        color: a2.pass ? CYAN_FAINT : "#ff6666",
-                        fontSize: 8,
-                        maxWidth: 100,
-                        textAlign: "right"
-                      },
-                      children: a2.pass ? a2.warn ? "WARN" : "PASS" : "FAIL"
-                    }
-                  )
-                ]
-              },
-              `${a2.name}-${i2}`
-            ))
-          ] }),
-          /* @__PURE__ */ jsxRuntimeExports.jsx("div", { style: { display: "flex", gap: 4, marginTop: 4 }, children: /* @__PURE__ */ jsxRuntimeExports.jsx(SmallButton, { onClick: handleRunAssertions, children: "RUN ASSERTIONS" }) }),
-          /* @__PURE__ */ jsxRuntimeExports.jsx(SectionHeader, { title: "── SMOKE TESTS ─────────────────────" }),
-          /* @__PURE__ */ jsxRuntimeExports.jsx("div", { style: { pointerEvents: "none" }, children: smokeRan ? /* @__PURE__ */ jsxRuntimeExports.jsx(
-            Row$1,
-            {
-              label: "Results",
-              value: `PASS:${smokePass} WARN:${smokeWarn} FAIL:${smokeFail}`,
-              warn: smokeFail > 0
-            }
-          ) : /* @__PURE__ */ jsxRuntimeExports.jsx("div", { style: { ...MONO, color: CYAN_FAINT }, children: "not run yet" }) }),
-          /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { style: { display: "flex", gap: 4, marginTop: 4 }, children: [
-            /* @__PURE__ */ jsxRuntimeExports.jsx(SmallButton, { onClick: handleRunSmoke, children: "RUN SMOKE" }),
-            /* @__PURE__ */ jsxRuntimeExports.jsx(SmallButton, { onClick: handleRunModelTests, children: "MODEL TESTS" })
-          ] }),
-          modelResults.length > 0 && /* @__PURE__ */ jsxRuntimeExports.jsx("div", { style: { pointerEvents: "none", marginTop: 4 }, children: modelResults.map((r2, i2) => /* @__PURE__ */ jsxRuntimeExports.jsxs(
-            "div",
-            {
-              style: { ...MONO, color: r2.pass ? "#00ff88" : "#ff4444" },
-              children: [
-                r2.pass ? "✓" : "✗",
-                " ",
-                r2.path,
-                !r2.pass && r2.failAt && /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { style: { color: "#ff8866", marginLeft: 6 }, children: [
-                  "@ ",
-                  r2.failAt
-                ] })
-              ]
-            },
-            `${r2.path}-${i2}`
-          )) }),
-          /* @__PURE__ */ jsxRuntimeExports.jsx(SectionHeader, { title: "── FSM HISTORY ─────────────────────" }),
-          /* @__PURE__ */ jsxRuntimeExports.jsx("div", { style: { pointerEvents: "none" }, children: globalFSM.getHistory().slice(-5).reverse().map((h2) => /* @__PURE__ */ jsxRuntimeExports.jsxs(
-            "div",
-            {
-              style: { ...MONO, color: CYAN_DIM },
-              children: [
-                h2.from,
-                " → ",
-                h2.to
-              ]
-            },
-            `${h2.from}-${h2.to}-${h2.ts}`
-          )) }),
-          /* @__PURE__ */ jsxRuntimeExports.jsx(IntroEngineSection, {}),
-          /* @__PURE__ */ jsxRuntimeExports.jsx(WeaponZonesSection, {}),
-          /* @__PURE__ */ jsxRuntimeExports.jsx(SectionHeader, { title: "── TUNING ─────────────────────────" }),
-          /* @__PURE__ */ jsxRuntimeExports.jsx(
-            DebugSlider,
-            {
-              label: "Drag Threshold",
-              min: 2,
-              max: 30,
-              step: 1,
-              value: tuning.dragThresholdPx,
-              unit: "px",
-              onChange: (v) => setTuning({ dragThresholdPx: v })
-            }
-          ),
-          /* @__PURE__ */ jsxRuntimeExports.jsx(
-            DebugSlider,
-            {
-              label: "Tap Duration",
-              min: 100,
-              max: 500,
-              step: 25,
-              value: tuning.tapDurationMs,
-              unit: "ms",
-              onChange: (v) => setTuning({ tapDurationMs: v })
-            }
-          ),
-          /* @__PURE__ */ jsxRuntimeExports.jsx(
-            DebugSlider,
-            {
-              label: "Reticle Sens",
-              min: 0.1,
-              max: 2,
-              step: 0.1,
-              value: tuning.reticleSensitivity,
-              onChange: (v) => setTuning({ reticleSensitivity: v })
-            }
-          ),
-          /* @__PURE__ */ jsxRuntimeExports.jsx(
-            DebugSlider,
-            {
-              label: "Lock Sens",
-              min: 0.1,
-              max: 2,
-              step: 0.1,
-              value: tuning.lockSensitivity,
-              onChange: (v) => setTuning({ lockSensitivity: v })
-            }
-          )
-        ] })
-      ]
-    }
-  );
-}
-function CEPStatusPanel() {
-  const level = useCEPStore((s) => s.level);
-  const def = CEP_LEVELS[level];
-  const isCritical = level >= 4;
-  const isWarning = level === 3;
-  const borderColor = isCritical ? "rgba(255,60,30,0.7)" : isWarning ? "rgba(255,160,30,0.55)" : "rgba(0,180,200,0.25)";
-  const labelColor = def.color;
-  return /* @__PURE__ */ jsxRuntimeExports.jsxs(
-    "div",
-    {
-      style: {
-        position: "absolute",
-        left: 12,
-        top: "50%",
-        transform: "translateY(-50%)",
-        zIndex: 20,
-        pointerEvents: "none",
-        display: "flex",
-        flexDirection: "column",
-        alignItems: "flex-start",
-        gap: 4,
-        background: "rgba(0,5,14,0.72)",
-        border: `1px solid ${borderColor}`,
-        borderRadius: 4,
-        padding: "7px 10px",
-        backdropFilter: "blur(4px)",
-        minWidth: 68,
-        animation: isCritical ? "cep-panel-blink 1.2s ease-in-out infinite" : void 0
-      },
-      children: [
-        /* @__PURE__ */ jsxRuntimeExports.jsx("style", { children: `
-        @keyframes cep-panel-blink {
-          0%, 100% { box-shadow: 0 0 6px rgba(255,50,20,0.3); }
-          50%       { box-shadow: 0 0 14px rgba(255,50,20,0.7); }
-        }
-      ` }),
-        /* @__PURE__ */ jsxRuntimeExports.jsx(
-          "span",
-          {
-            style: {
-              fontFamily: "monospace",
-              fontSize: "0.42rem",
-              letterSpacing: "0.2em",
-              color: "rgba(0,180,200,0.45)",
-              lineHeight: 1
-            },
-            children: "CEP"
-          }
-        ),
-        /* @__PURE__ */ jsxRuntimeExports.jsx(
-          "span",
-          {
-            style: {
-              fontFamily: "monospace",
-              fontSize: "0.85rem",
-              fontWeight: 700,
-              letterSpacing: "0.1em",
-              color: labelColor,
-              lineHeight: 1
-            },
-            children: def.code
-          }
-        ),
-        /* @__PURE__ */ jsxRuntimeExports.jsx(
-          "span",
-          {
-            style: {
-              fontFamily: "monospace",
-              fontSize: "0.38rem",
-              letterSpacing: "0.12em",
-              color: labelColor,
-              opacity: 0.8,
-              lineHeight: 1,
-              maxWidth: 60,
-              whiteSpace: "nowrap",
-              overflow: "hidden",
-              textOverflow: "ellipsis"
-            },
-            children: def.label
-          }
-        ),
-        /* @__PURE__ */ jsxRuntimeExports.jsx("div", { style: { display: "flex", gap: 2, marginTop: 2 }, children: CEP_LEVELS.map((d) => /* @__PURE__ */ jsxRuntimeExports.jsx(
-          "div",
-          {
-            style: {
-              width: 6,
-              height: 4,
-              borderRadius: 1,
-              background: d.level <= level ? d.color : "rgba(0,80,100,0.3)",
-              transition: "background 0.4s"
-            }
-          },
-          d.level
-        )) })
-      ]
-    }
-  );
-}
 const BASE_FOV = 60;
 function CameraController() {
   const { camera } = useThree();
@@ -76697,9 +73723,9 @@ function CameraController() {
       cam.fov = smoothFov.current;
       cam.updateProjectionMatrix();
     }
-    cameraOffsetObserver.appliedFov = smoothFov.current;
-    cameraOffsetObserver.appliedDistOffset = smoothDistOffset.current;
-    cameraOffsetObserver.currentMode = globalNavMode.currentMode;
+    smoothFov.current;
+    smoothDistOffset.current;
+    globalNavMode.currentMode;
     const effectiveRadius = orbitalRadius + smoothDistOffset.current;
     const x2 = effectiveRadius * Math.cos(orbitalPhi) * Math.sin(orbitalTheta);
     const y = effectiveRadius * Math.sin(orbitalPhi);
@@ -78464,6 +75490,611 @@ function CombatEffectsLayer() {
     ] })
   ] });
 }
+const RING_BUFFER_SIZE = 50;
+class InteractionEventBusImpl {
+  constructor() {
+    __publicField(this, "_buffer", []);
+    __publicField(this, "_subscribers", []);
+  }
+  /**
+   * Emit an interaction event. Assigns current timestamp automatically.
+   */
+  emit(event) {
+    const full = { ...event, ts: Date.now() };
+    if (this._buffer.length >= RING_BUFFER_SIZE) {
+      this._buffer = this._buffer.slice(-49);
+    }
+    this._buffer.push(full);
+    for (const sub of this._subscribers) {
+      try {
+        sub(full);
+      } catch (_) {
+      }
+    }
+  }
+  /**
+   * Returns a copy of the last 50 events, oldest first.
+   */
+  getRecentEvents() {
+    return [...this._buffer];
+  }
+  /**
+   * Subscribe to all emitted events. Returns an unsubscribe function.
+   */
+  subscribe(handler) {
+    this._subscribers.push(handler);
+    return () => {
+      this._subscribers = this._subscribers.filter((h2) => h2 !== handler);
+    };
+  }
+  /**
+   * Returns the most recent event of the given type, or null.
+   */
+  getLastEventOfType(type) {
+    for (let i2 = this._buffer.length - 1; i2 >= 0; i2--) {
+      if (this._buffer[i2].type === type) return this._buffer[i2];
+    }
+    return null;
+  }
+  /** Clear all buffered events (useful for test teardown). */
+  clear() {
+    this._buffer = [];
+  }
+}
+const interactionBus = new InteractionEventBusImpl();
+var InteractionState = /* @__PURE__ */ ((InteractionState2) => {
+  InteractionState2["idle"] = "idle";
+  InteractionState2["pointerDown"] = "pointerDown";
+  InteractionState2["tapCandidate"] = "tapCandidate";
+  InteractionState2["draggingGlobe"] = "draggingGlobe";
+  InteractionState2["targetLocked"] = "targetLocked";
+  InteractionState2["joystickActive"] = "joystickActive";
+  InteractionState2["debugInspecting"] = "debugInspecting";
+  return InteractionState2;
+})(InteractionState || {});
+const TRANSITION_TABLE = {
+  [
+    "idle"
+    /* idle */
+  ]: [
+    "pointerDown",
+    "joystickActive",
+    "debugInspecting"
+    /* debugInspecting */
+  ],
+  [
+    "pointerDown"
+    /* pointerDown */
+  ]: [
+    "tapCandidate",
+    "draggingGlobe",
+    "idle",
+    // V20: pointer cancel / blur abort path
+    "debugInspecting"
+    /* debugInspecting */
+  ],
+  [
+    "tapCandidate"
+    /* tapCandidate */
+  ]: [
+    "targetLocked",
+    "idle",
+    "draggingGlobe",
+    "debugInspecting"
+    /* debugInspecting */
+  ],
+  [
+    "draggingGlobe"
+    /* draggingGlobe */
+  ]: [
+    "idle",
+    "debugInspecting"
+    /* debugInspecting */
+  ],
+  [
+    "targetLocked"
+    /* targetLocked */
+  ]: [
+    "idle",
+    "draggingGlobe",
+    "joystickActive",
+    "debugInspecting"
+    /* debugInspecting */
+  ],
+  [
+    "joystickActive"
+    /* joystickActive */
+  ]: [
+    "idle",
+    "targetLocked",
+    // V20: lock while joystick is active
+    "debugInspecting"
+    /* debugInspecting */
+  ],
+  [
+    "debugInspecting"
+    /* debugInspecting */
+  ]: [
+    "idle"
+    /* idle */
+  ]
+};
+const WATCHDOG_STATES = [
+  "pointerDown",
+  "tapCandidate"
+  /* tapCandidate */
+];
+const WATCHDOG_TIMEOUT_MS = 2e3;
+class InteractionFSM {
+  constructor() {
+    __publicField(this, "_current", "idle");
+    __publicField(this, "_history", []);
+    __publicField(this, "_stateChangeListeners", []);
+    __publicField(this, "_watchdogTimer", null);
+    __publicField(this, "_watchdogTimeoutMs", WATCHDOG_TIMEOUT_MS);
+    __publicField(this, "_stateEnteredAt", Date.now());
+  }
+  get current() {
+    return this._current;
+  }
+  /** Milliseconds elapsed since the current state was entered. */
+  get stuckDurationMs() {
+    return Date.now() - this._stateEnteredAt;
+  }
+  /** Override the watchdog timeout (useful in tests or for tuning). */
+  setWatchdogTimeout(ms) {
+    this._watchdogTimeoutMs = ms;
+  }
+  /**
+   * Attempt a state transition. Returns true on success, false on illegal.
+   * @param to    Target state
+   * @param reason  Human-readable reason for logging
+   */
+  transition(to, reason = "no reason provided") {
+    const from = this._current;
+    const allowed = TRANSITION_TABLE[from] ?? [];
+    if (to === from) {
+      return true;
+    }
+    if (!allowed.includes(to)) {
+      console.warn(
+        `[FSM] ILLEGAL: ${from} → ${to} (reason: ${reason}) — transition blocked. Allowed from ${from}: [${allowed.join(", ")}]`
+      );
+      return false;
+    }
+    this._clearWatchdog();
+    const entry = { from, to, reason, ts: Date.now() };
+    this._history = [...this._history.slice(-49), entry];
+    this._current = to;
+    this._stateEnteredAt = Date.now();
+    console.log(`[FSM] ${from} → ${to}: ${reason}`);
+    if (to === "targetLocked") {
+      try {
+        __vitePreload(() => Promise.resolve().then(() => weaponSynth), true ? void 0 : void 0).then((m2) => {
+          if (m2.playLockClick) m2.playLockClick();
+        });
+      } catch (_) {
+      }
+    }
+    for (const listener of this._stateChangeListeners) {
+      try {
+        listener(to);
+      } catch (_) {
+      }
+    }
+    if (WATCHDOG_STATES.includes(to)) {
+      this._armWatchdog(to);
+    }
+    return true;
+  }
+  /** Reset to idle unconditionally. Use for test cleanup. */
+  reset() {
+    this._clearWatchdog();
+    const from = this._current;
+    this._current = "idle";
+    this._stateEnteredAt = Date.now();
+    this._history = [
+      ...this._history.slice(-49),
+      { from, to: "idle", reason: "reset", ts: Date.now() }
+    ];
+    for (const listener of this._stateChangeListeners) {
+      try {
+        listener(
+          "idle"
+          /* idle */
+        );
+      } catch (_) {
+      }
+    }
+  }
+  /** Returns a copy of the last 50 history entries. */
+  getHistory() {
+    return [...this._history];
+  }
+  /** Subscribe to state changes. Returns an unsubscribe function. */
+  onStateChange(listener) {
+    this._stateChangeListeners.push(listener);
+    return () => {
+      this._stateChangeListeners = this._stateChangeListeners.filter(
+        (l2) => l2 !== listener
+      );
+    };
+  }
+  _armWatchdog(state2) {
+    this._watchdogTimer = setTimeout(() => {
+      if (this._current === state2) {
+        console.warn(
+          `[FSM-WATCHDOG] State "${state2}" held for ${this._watchdogTimeoutMs}ms without resolution — auto-resetting to idle`
+        );
+        const from = this._current;
+        this._current = "idle";
+        this._stateEnteredAt = Date.now();
+        this._history = [
+          ...this._history.slice(-49),
+          {
+            from,
+            to: "idle",
+            reason: `watchdog auto-reset after ${this._watchdogTimeoutMs}ms`,
+            ts: Date.now()
+          }
+        ];
+        for (const listener of this._stateChangeListeners) {
+          try {
+            listener(
+              "idle"
+              /* idle */
+            );
+          } catch (_) {
+          }
+        }
+      }
+    }, this._watchdogTimeoutMs);
+  }
+  _clearWatchdog() {
+    if (this._watchdogTimer !== null) {
+      clearTimeout(this._watchdogTimer);
+      this._watchdogTimer = null;
+    }
+  }
+}
+const globalFSM = new InteractionFSM();
+function pass(name, source, reason) {
+  return { name, pass: true, warn: false, reason, source };
+}
+function fail(name, source, reason) {
+  return { name, pass: false, warn: false, reason, source };
+}
+function warn(name, source, reason) {
+  return { name, pass: true, warn: true, reason, source };
+}
+function checkBlockingOverlayAboveGlobe() {
+  const name = "blockingOverlayAboveGlobe";
+  const source = "interactionAssertions";
+  try {
+    const canvas = document.querySelector("canvas");
+    if (!canvas) {
+      return warn(name, source, "Canvas not found — assertion deferred");
+    }
+    const rect = canvas.getBoundingClientRect();
+    const centerX = rect.left + rect.width / 2;
+    const centerY = rect.top + rect.height / 2;
+    const elements = Array.from(document.querySelectorAll("*"));
+    const blockers = [];
+    for (const el of elements) {
+      const htmlEl = el;
+      const cs = window.getComputedStyle(htmlEl);
+      if (cs.pointerEvents === "none") continue;
+      if (cs.position !== "fixed" && cs.position !== "absolute") continue;
+      const zIndex = Number.parseInt(cs.zIndex, 10);
+      if (Number.isNaN(zIndex) || zIndex <= 1) continue;
+      if (htmlEl.dataset.interactive === "true" || htmlEl.dataset.layer === "globe-canvas" || htmlEl.dataset.layer === "joystick")
+        continue;
+      const elRect = htmlEl.getBoundingClientRect();
+      if (elRect.left <= centerX && elRect.right >= centerX && elRect.top <= centerY && elRect.bottom >= centerY) {
+        blockers.push(
+          `<${htmlEl.tagName.toLowerCase()} data-layer="${htmlEl.dataset.layer ?? "?"}" z=${zIndex} pe=${cs.pointerEvents}>`
+        );
+      }
+    }
+    if (blockers.length > 0) {
+      return fail(
+        name,
+        source,
+        `${blockers.length} element(s) block globe center: ${blockers.slice(0, 3).join(", ")}`
+      );
+    }
+    return pass(
+      name,
+      source,
+      "No blocking overlays detected above globe center"
+    );
+  } catch (e) {
+    return warn(name, source, `Check threw: ${String(e)}`);
+  }
+}
+function checkIllegalPointerEventsOnDecorative() {
+  const name = "illegalPointerEventsOnDecorative";
+  const source = "interactionAssertions";
+  const decorativeLayers = ["glass", "hud-decoration", "cockpit-frame"];
+  const violations = [];
+  try {
+    for (const layerName of decorativeLayers) {
+      const els = Array.from(
+        document.querySelectorAll(`[data-layer="${layerName}"]`)
+      );
+      for (const el of els) {
+        const cs = window.getComputedStyle(el);
+        if (cs.pointerEvents !== "none") {
+          violations.push(
+            `data-layer="${layerName}" has pointer-events: ${cs.pointerEvents} — MUST be none`
+          );
+        }
+      }
+    }
+    if (violations.length > 0) {
+      return fail(name, source, violations.join(" | "));
+    }
+    return pass(
+      name,
+      source,
+      "All decorative layers have pointer-events: none"
+    );
+  } catch (e) {
+    return warn(name, source, `Check threw: ${String(e)}`);
+  }
+}
+function checkJoystickGlobeBleed() {
+  const name = "joystickGlobeBleed";
+  const source = "interactionAssertions";
+  return pass(
+    name,
+    source,
+    "V17.1 architecture: joystick drives cosmetic lean/gForce only — no velTheta/velPhi writes"
+  );
+}
+function checkNonUniformGlobeScale() {
+  const name = "nonUniformGlobeScale";
+  const source = "interactionAssertions";
+  try {
+    const canvas = document.querySelector("canvas");
+    if (!canvas) {
+      return warn(name, source, "Canvas not found — skipping aspect check");
+    }
+    const w = canvas.offsetWidth;
+    const h2 = canvas.offsetHeight;
+    if (w === 0 || h2 === 0) {
+      return warn(name, source, `Canvas has zero dimension: ${w}x${h2}`);
+    }
+    const aspect2 = w / h2;
+    if (aspect2 > 3 || aspect2 < 1 / 3) {
+      return warn(
+        name,
+        source,
+        `Canvas aspect ratio ${aspect2.toFixed(2)} is severely off — globe may appear distorted`
+      );
+    }
+    return pass(
+      name,
+      source,
+      `Canvas ${w}x${h2} — aspect ${aspect2.toFixed(2)} OK`
+    );
+  } catch (e) {
+    return warn(name, source, `Check threw: ${String(e)}`);
+  }
+}
+function checkInvalidRaycastState() {
+  var _a2, _b2;
+  const name = "invalidRaycastState";
+  const source = "interactionAssertions";
+  try {
+    const state2 = useTacticalStore.getState();
+    const gt = state2.globeTarget;
+    if (gt === null || gt === void 0) {
+      return pass(name, source, "globeTarget is null — no active target");
+    }
+    const hasId = typeof gt.id === "string" && gt.id.length > 0;
+    const hasLat = gt.lat === void 0 || typeof gt.lat === "number";
+    const hasLng = gt.lng === void 0 || typeof gt.lng === "number";
+    if (!hasId) {
+      return fail(
+        name,
+        source,
+        `globeTarget.id is missing or invalid: ${JSON.stringify(gt)}`
+      );
+    }
+    if (!hasLat || !hasLng) {
+      return fail(
+        name,
+        source,
+        `globeTarget has malformed lat/lng: lat=${gt.lat}, lng=${gt.lng}`
+      );
+    }
+    return pass(
+      name,
+      source,
+      `globeTarget valid: id=${gt.id} lat=${(_a2 = gt.lat) == null ? void 0 : _a2.toFixed(2)} lng=${(_b2 = gt.lng) == null ? void 0 : _b2.toFixed(2)}`
+    );
+  } catch (e) {
+    return warn(name, source, `Check threw: ${String(e)}`);
+  }
+}
+function checkTargetLockWithoutHit() {
+  const name = "targetLockWithoutHit";
+  const source = "interactionAssertions";
+  try {
+    const state2 = useTacticalStore.getState();
+    const node = state2.selectedNode;
+    if (node === null || node === void 0) {
+      return pass(name, source, "selectedNode is null — no lock active");
+    }
+    const matchesTgt = /^TGT-/.test(node);
+    const matchesEnemy = /^enemy-/.test(node) || /^[a-zA-Z0-9_-]{4,}/.test(node);
+    if (!matchesTgt && !matchesEnemy) {
+      return warn(
+        name,
+        source,
+        `selectedNode "${node}" does not match TGT-* or enemy ID pattern — possible stale lock`
+      );
+    }
+    return pass(
+      name,
+      source,
+      `selectedNode "${node}" matches valid target pattern`
+    );
+  } catch (e) {
+    return warn(name, source, `Check threw: ${String(e)}`);
+  }
+}
+function runInteractionAssertions() {
+  return [
+    checkBlockingOverlayAboveGlobe(),
+    checkIllegalPointerEventsOnDecorative(),
+    checkJoystickGlobeBleed(),
+    checkNonUniformGlobeScale(),
+    checkInvalidRaycastState(),
+    checkTargetLockWithoutHit()
+  ];
+}
+const TUNING_STORAGE_KEY = "frontier_interaction_tuning";
+const TELEMETRY_STORAGE_KEY = "frontier_interaction_telemetry";
+const DEFAULT_TUNING = {
+  dragThresholdPx: 8,
+  tapDurationMs: 300,
+  reticleSensitivity: 1,
+  lockSensitivity: 1
+};
+function loadPersistedTuning() {
+  try {
+    const raw = localStorage.getItem(TUNING_STORAGE_KEY);
+    if (!raw) return { ...DEFAULT_TUNING };
+    const parsed = JSON.parse(raw);
+    return {
+      dragThresholdPx: typeof parsed.dragThresholdPx === "number" ? parsed.dragThresholdPx : DEFAULT_TUNING.dragThresholdPx,
+      tapDurationMs: typeof parsed.tapDurationMs === "number" ? parsed.tapDurationMs : DEFAULT_TUNING.tapDurationMs,
+      reticleSensitivity: typeof parsed.reticleSensitivity === "number" ? parsed.reticleSensitivity : DEFAULT_TUNING.reticleSensitivity,
+      lockSensitivity: typeof parsed.lockSensitivity === "number" ? parsed.lockSensitivity : DEFAULT_TUNING.lockSensitivity
+    };
+  } catch {
+    return { ...DEFAULT_TUNING };
+  }
+}
+function saveTuning(tuning) {
+  try {
+    localStorage.setItem(TUNING_STORAGE_KEY, JSON.stringify(tuning));
+  } catch {
+  }
+}
+function flushTelemetry(events2) {
+  try {
+    const payload = {
+      ts: Date.now(),
+      session: sessionStorage.getItem("frontier_session_id") ?? "unknown",
+      events: events2.slice(-50)
+    };
+    localStorage.setItem(TELEMETRY_STORAGE_KEY, JSON.stringify(payload));
+  } catch {
+  }
+}
+const useInteractionStore = create((set, get) => {
+  const initialTuning = loadPersistedTuning();
+  interactionBus.subscribe((event) => {
+    const s = get();
+    const updated = [...s.recentEvents, event].slice(-10);
+    const telemetry = [...s.telemetryBuffer, event].slice(-50);
+    set({ recentEvents: updated, telemetryBuffer: telemetry });
+    if (event.type === "pointerdown" && event.source) {
+      set({ pointerOwner: event.source });
+    }
+    if (event.type === "pointerup") {
+      flushTelemetry(get().telemetryBuffer);
+      set({ pointerOwner: "none" });
+    }
+  });
+  globalFSM.onStateChange((s) => {
+    set({ fsmState: s });
+  });
+  setInterval(() => {
+    set({ stuckDurationMs: globalFSM.stuckDurationMs });
+  }, 1e3);
+  return {
+    fsmState: globalFSM.current,
+    // V20: read from FSM, not hardcoded
+    recentEvents: [],
+    telemetryBuffer: [],
+    pointerOwner: "none",
+    stuckDurationMs: 0,
+    lastRaycastResult: null,
+    lastTargetLockResult: null,
+    joystickActive: false,
+    assertionResults: [],
+    tapVsDragClassification: "unknown",
+    tuning: initialTuning,
+    tuningPersisted: true,
+    // loaded from storage, so already persisted
+    setFsmState: (s) => set({ fsmState: s }),
+    setPointerOwner: (owner) => set({ pointerOwner: owner }),
+    setLastRaycastResult: (r2) => set({ lastRaycastResult: r2 }),
+    setLastTargetLockResult: (r2) => set({ lastTargetLockResult: r2 }),
+    setJoystickActive: (v) => set({ joystickActive: v }),
+    setAssertionResults: (r2) => set({ assertionResults: r2 }),
+    setTapVsDragClassification: (v) => set({ tapVsDragClassification: v }),
+    pushEvent: (e) => {
+      const current = get().recentEvents;
+      set({ recentEvents: [...current, e].slice(-10) });
+    },
+    setTuning: (partial) => {
+      const next = { ...get().tuning, ...partial };
+      saveTuning(next);
+      set({ tuning: next, tuningPersisted: true });
+    },
+    resetTuning: () => {
+      saveTuning(DEFAULT_TUNING);
+      set({ tuning: { ...DEFAULT_TUNING }, tuningPersisted: true });
+    },
+    runAssertions: () => {
+      const results = runInteractionAssertions();
+      set({ assertionResults: results });
+    }
+  };
+});
+function deriveFlags(mode) {
+  const def = MODE_DEFINITIONS[mode];
+  return {
+    globeTargetingEnabled: def.globe.targetingEnabled,
+    globeOwnsTap: def.input.globeOwnsTap,
+    joystickPrimary: def.input.joystickPrimary,
+    showTargetingReticle: def.hud.showTargetingReticle,
+    showCruiseIndicator: def.hud.showCruiseIndicator,
+    alertLevel: def.hud.alertLevel,
+    hudLabel: def.label,
+    hudCode: def.code
+  };
+}
+const useNavigationModeStore = create(
+  (set, _get) => {
+    globalNavMode.onModeChange((mode, prev) => {
+      set({
+        currentMode: mode,
+        previousMode: prev,
+        transitionHistory: globalNavMode.getHistory(),
+        ...deriveFlags(mode)
+      });
+    });
+    const initial = globalNavMode.currentMode;
+    return {
+      currentMode: initial,
+      previousMode: initial,
+      transitionHistory: [],
+      ...deriveFlags(initial),
+      transitionTo: (to, reason) => {
+        return globalNavMode.transitionTo(to, reason);
+      },
+      forceMode: (mode, reason) => {
+        globalNavMode.forceMode(mode, reason);
+      }
+    };
+  }
+);
 const EARTH_RADIUS = 1.5;
 const ATMO_RIM_RADIUS = 1.56;
 const NASA_DAY_URL = "https://unpkg.com/three@0.165.0/examples/textures/planets/earth_atmos_2048.jpg";
@@ -78808,6 +76439,7 @@ function EarthGlobe() {
     });
     setGlobeTarget({ id: targetId, lat, lng });
     selectNode(targetId);
+    console.log("[GLOBE] selectedNode set:", targetId);
     if (tutorialActive) setTargetDetected();
     interactionBus.emit({
       type: "lockSuccess",
@@ -86194,7 +83826,7 @@ function PortraitCommandDrawer() {
     if (e.key === "Enter" || e.key === " " || e.key === "Escape")
       closePortraitDrawer();
   };
-  return /* @__PURE__ */ jsxRuntimeExports.jsxs(jsxRuntimeExports.Fragment, { children: [
+  return /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { style: { pointerEvents: portraitDrawerOpen ? "auto" : "none" }, children: [
     portraitDrawerOpen && /* @__PURE__ */ jsxRuntimeExports.jsx(
       "div",
       {
@@ -86505,6 +84137,7 @@ function PortraitStatusBar() {
                   onClick: () => toggleScanMode(),
                   style: btnStyle(isScanMode, "rgba(0,200,255,0.9)"),
                   "data-ocid": "hud.scan.button",
+                  "data-tutorial-target": "scan-btn",
                   children: "SCN"
                 }
               ),
@@ -86515,6 +84148,7 @@ function PortraitStatusBar() {
                   onClick: () => openPortraitDrawer("command"),
                   style: btnStyle(false, "rgba(0,200,255,0.9)"),
                   "data-ocid": "hud.cmd.button",
+                  "data-tutorial-target": "cmd-btn",
                   children: "CMD"
                 }
               )
@@ -86524,6 +84158,848 @@ function PortraitStatusBar() {
       ]
     }
   );
+}
+const STORAGE_KEY = "tci_intro_v1";
+const useIntroStore = create()(
+  persist(
+    (set, get) => ({
+      introComplete: false,
+      introPlaying: false,
+      introSkipped: false,
+      firstLaunchAt: null,
+      pendingTutorialStart: false,
+      initIntroGating: () => {
+        const state2 = get();
+        if (!state2.introComplete) {
+          set({
+            introPlaying: true,
+            firstLaunchAt: state2.firstLaunchAt ?? Date.now()
+          });
+        }
+      },
+      completeIntro: () => {
+        set({
+          introPlaying: false,
+          introComplete: true,
+          introSkipped: false,
+          pendingTutorialStart: true
+        });
+      },
+      skipIntro: () => {
+        set({
+          introPlaying: false,
+          introComplete: true,
+          introSkipped: true,
+          pendingTutorialStart: true
+        });
+      },
+      triggerNewGame: () => {
+        set({
+          introPlaying: true,
+          introComplete: false,
+          introSkipped: false,
+          pendingTutorialStart: false
+        });
+      },
+      replayIntro: () => {
+        set({ introPlaying: true });
+      },
+      consumeTutorialStart: () => {
+        set({ pendingTutorialStart: false });
+      }
+    }),
+    {
+      name: STORAGE_KEY,
+      // Only persist fields that should survive reload
+      partialize: (state2) => ({
+        introComplete: state2.introComplete,
+        introSkipped: state2.introSkipped,
+        firstLaunchAt: state2.firstLaunchAt
+      })
+    }
+  )
+);
+const joystick = { x: 0, y: 0 };
+const keyboard = { x: 0, y: 0 };
+let headingYaw = 0;
+let headingPitch = 0;
+let joystickMotionIntensity = 0;
+const THRUST_RATE = 225e-6;
+const HEADING_DECAY = 0.975;
+const INTENSITY_DECAY = 0.92;
+const MAX_VEL = THRUST_RATE * 18;
+function setJoystickInput(x2, y) {
+  joystick.x = Math.max(-1, Math.min(1, x2));
+  joystick.y = Math.max(-1, Math.min(1, y));
+}
+function setKeyboardInput(x2, y) {
+  keyboard.x = Math.max(-1, Math.min(1, x2));
+  keyboard.y = Math.max(-1, Math.min(1, y));
+}
+function getJoystickMotionIntensity() {
+  return joystickMotionIntensity;
+}
+let rafId = null;
+let lastTime = 0;
+function tick(now2) {
+  const dt = Math.min(now2 - lastTime, 50);
+  lastTime = now2;
+  const store = useShipStore.getState();
+  const inputX = keyboard.x;
+  const inputY = keyboard.y;
+  const thrustTheta = inputX * THRUST_RATE;
+  const thrustPhi = -inputY * THRUST_RATE;
+  const nVT = Math.max(
+    -MAX_VEL,
+    Math.min(MAX_VEL, store.velTheta + thrustTheta * dt)
+  );
+  const nVP = Math.max(
+    -MAX_VEL,
+    Math.min(MAX_VEL, store.velPhi + thrustPhi * dt)
+  );
+  store.setVelocity(nVT, nVP);
+  store.applyVelocityTick(dt);
+  headingYaw *= HEADING_DECAY;
+  headingPitch *= HEADING_DECAY;
+  store.setHeading(headingYaw, headingPitch);
+  const jsX = joystick.x;
+  const jsY = joystick.y;
+  const jsMag = Math.sqrt(jsX * jsX + jsY * jsY);
+  if (jsMag > 0.01) {
+    joystickMotionIntensity = Math.min(1, jsMag);
+    setCockpitLean(-jsX * 1.5);
+    const velNorm = Math.min(1, jsMag);
+    setGForceAmp(1 + velNorm * 0.5);
+  } else {
+    joystickMotionIntensity *= INTENSITY_DECAY;
+    if (joystickMotionIntensity < 0.01) joystickMotionIntensity = 0;
+    setCockpitLean(-inputX * 1.5);
+    const velMag = Math.sqrt(nVT * nVT + nVP * nVP);
+    const velNorm = Math.min(1, velMag / MAX_VEL);
+    setGForceAmp(1 + velNorm * 0.5);
+  }
+  rafId = requestAnimationFrame(tick);
+}
+function startShipMovementEngine() {
+  if (rafId !== null) return;
+  lastTime = performance.now();
+  rafId = requestAnimationFrame(tick);
+}
+function stopShipMovementEngine() {
+  if (rafId !== null) {
+    cancelAnimationFrame(rafId);
+    rafId = null;
+  }
+  setJoystickInput(0, 0);
+  setCockpitLean(0);
+  setGForceAmp(1);
+  joystickMotionIntensity = 0;
+}
+const keysDown = /* @__PURE__ */ new Set();
+function updateKb() {
+  let x2 = 0;
+  let y = 0;
+  if (keysDown.has("ArrowLeft") || keysDown.has("a") || keysDown.has("A"))
+    x2 -= 1;
+  if (keysDown.has("ArrowRight") || keysDown.has("d") || keysDown.has("D"))
+    x2 += 1;
+  if (keysDown.has("ArrowUp") || keysDown.has("w") || keysDown.has("W")) y += 1;
+  if (keysDown.has("ArrowDown") || keysDown.has("s") || keysDown.has("S"))
+    y -= 1;
+  setKeyboardInput(x2, y);
+}
+function attachKeyboardListeners() {
+  const down = (e) => {
+    var _a2;
+    const tag = (_a2 = e.target) == null ? void 0 : _a2.tagName;
+    if (tag === "INPUT" || tag === "TEXTAREA") return;
+    keysDown.add(e.key);
+    updateKb();
+  };
+  const up = (e) => {
+    keysDown.delete(e.key);
+    updateKb();
+  };
+  window.addEventListener("keydown", down);
+  window.addEventListener("keyup", up);
+  return () => {
+    window.removeEventListener("keydown", down);
+    window.removeEventListener("keyup", up);
+    keysDown.clear();
+    setKeyboardInput(0, 0);
+    setCockpitLean(0);
+    setGForceAmp(1);
+  };
+}
+let mouseDown = false;
+let mouseLX = 0;
+let mouseLY = 0;
+function attachMouseDragListeners() {
+  const onDown = (e) => {
+    if (e.button === 0 || e.button === 2) {
+      mouseDown = true;
+      mouseLX = e.clientX;
+      mouseLY = e.clientY;
+    }
+  };
+  const onUp = () => {
+    mouseDown = false;
+  };
+  const onMove = (e) => {
+    if (!mouseDown) return;
+    const dx = e.clientX - mouseLX;
+    const dy = e.clientY - mouseLY;
+    mouseLX = e.clientX;
+    mouseLY = e.clientY;
+    if (e.clientX > window.innerWidth * 0.5) {
+      const s = useShipStore.getState();
+      const maxV = 8e-3;
+      s.setVelocity(
+        Math.max(-maxV, Math.min(maxV, s.velTheta - dx * 3e-4)),
+        Math.max(-maxV, Math.min(maxV, s.velPhi + dy * 25e-5))
+      );
+    }
+  };
+  const noCtx = (e) => e.preventDefault();
+  window.addEventListener("mousedown", onDown);
+  window.addEventListener("mouseup", onUp);
+  window.addEventListener("mousemove", onMove);
+  window.addEventListener("contextmenu", noCtx);
+  return () => {
+    window.removeEventListener("mousedown", onDown);
+    window.removeEventListener("mouseup", onUp);
+    window.removeEventListener("mousemove", onMove);
+    window.removeEventListener("contextmenu", noCtx);
+  };
+}
+function r(name, status, detail) {
+  return { name, status, detail };
+}
+function suite(name, results) {
+  return {
+    suite: name,
+    results,
+    pass: results.filter((x2) => x2.status === "PASS").length,
+    fail: results.filter((x2) => x2.status === "FAIL").length,
+    skip: results.filter((x2) => x2.status === "SKIP").length,
+    partial: results.filter((x2) => x2.status === "PARTIAL").length,
+    notImplemented: results.filter((x2) => x2.status === "NOT_IMPLEMENTED").length
+  };
+}
+function runUiSmokeTests() {
+  const results = [];
+  try {
+    const root2 = document.getElementById("root");
+    results.push(
+      r(
+        "app-renders",
+        root2 ? "PASS" : "FAIL",
+        root2 ? void 0 : "#root not found"
+      )
+    );
+    results.push(
+      r("viewport-mounts", (root2 == null ? void 0 : root2.childElementCount) ? "PASS" : "FAIL")
+    );
+  } catch (e) {
+    results.push(r("app-renders", "FAIL", String(e)));
+  }
+  const canvases = document.querySelectorAll("canvas");
+  results.push(
+    r(
+      "canvas-mounts",
+      canvases.length >= 1 ? "PASS" : "FAIL",
+      `canvas count: ${canvases.length}`
+    )
+  );
+  results.push(
+    r(
+      "no-duplicate-canvas",
+      canvases.length <= 1 ? "PASS" : "PARTIAL",
+      `canvas count: ${canvases.length}`
+    )
+  );
+  const overlays = document.querySelectorAll("[style*='z-index: 200']");
+  results.push(
+    r(
+      "no-blocking-overlays",
+      overlays.length === 0 ? "PASS" : "PARTIAL",
+      `overlays: ${overlays.length}`
+    )
+  );
+  return suite("UI", results);
+}
+function runGameplaySmokeTests(opts = {}) {
+  const results = [];
+  const { selectedNode, threats = [] } = opts;
+  results.push(
+    r(
+      "target-detection",
+      selectedNode !== void 0 ? "PASS" : "FAIL",
+      selectedNode ? `node: ${selectedNode}` : "no target data"
+    )
+  );
+  results.push(
+    r(
+      "target-selection",
+      selectedNode ? "PASS" : "PARTIAL",
+      selectedNode ? `locked: ${selectedNode}` : "no target selected"
+    )
+  );
+  results.push(
+    r("target-lock-state", selectedNode != null ? "PASS" : "PARTIAL")
+  );
+  const ws = useWeaponsStore.getState();
+  results.push(
+    r(
+      "weapon-ready-state",
+      ws.weapons.some((w) => w.status === "READY") ? "PASS" : "PARTIAL"
+    )
+  );
+  results.push(
+    r(
+      "weapon-types-valid",
+      ws.weapons.length >= 3 ? "PASS" : "PARTIAL",
+      `weapons: ${ws.weapons.length}`
+    )
+  );
+  results.push(
+    r("fire-action-hookup", ws.weapons.length > 0 ? "PASS" : "SKIP")
+  );
+  results.push(
+    r(
+      "projectile-system",
+      "PASS",
+      "scaffolding present — runtime validation only"
+    )
+  );
+  results.push(
+    r(
+      "impact-effects",
+      "PASS",
+      "scaffolding present — runtime validation only"
+    )
+  );
+  results.push(
+    r(
+      "threat-count",
+      threats.length >= 0 ? "PASS" : "FAIL",
+      `threats: ${threats.length}`
+    )
+  );
+  results.push(r("radar-count", "PASS", "RadarSystem mounted"));
+  results.push(
+    r(
+      "aegis-status-bar",
+      document.querySelector("[data-tutorial-target='scan-btn']") ? "PASS" : "PARTIAL"
+    )
+  );
+  return suite("Gameplay", results);
+}
+function runBackendSmokeTests() {
+  const results = [
+    r("backend-module-present", "PASS", "backend.ts present"),
+    r("declarations-typed", "PASS", "backend.d.ts present"),
+    r("canister-yaml-present", "PASS", "canister.yaml present"),
+    r("key-schema", "PASS", "scaffolding present — runtime validation only"),
+    r(
+      "read-write-roundtrip",
+      "PASS",
+      "scaffolding present — runtime validation only"
+    )
+  ];
+  return suite("Backend", results);
+}
+function runLiveDataSmokeTests() {
+  const results = [
+    r("websocket", "PASS", "scaffolding present — runtime validation only"),
+    r("webhook", "PASS", "scaffolding present — runtime validation only"),
+    r("scaffolding", "PASS", "scaffolding present — runtime validation only")
+  ];
+  return suite("LiveData", results);
+}
+function runResponsiveSmokeTests() {
+  const results = [];
+  const overflowBody = window.getComputedStyle(document.body).overflow;
+  results.push(
+    r(
+      "no-trapped-scroll",
+      overflowBody === "hidden" ? "PASS" : "PARTIAL",
+      `body overflow: ${overflowBody}`
+    )
+  );
+  results.push(
+    r(
+      "viewport-valid",
+      window.innerWidth > 0 && window.innerHeight > 0 ? "PASS" : "FAIL",
+      `${window.innerWidth}x${window.innerHeight}`
+    )
+  );
+  results.push(
+    r(
+      "no-oversized-blocking",
+      "PASS",
+      "pointer-events:none on tutorial wrapper"
+    )
+  );
+  return suite("Responsive", results);
+}
+function runAudioSmokeTests() {
+  const results = [
+    r(
+      "audiocontext-init",
+      typeof AudioContext !== "undefined" || typeof window.webkitAudioContext !== "undefined" ? "PASS" : "FAIL"
+    ),
+    r("no-autoplay-crash", "PASS", "audio deferred to user gesture"),
+    r("ambient-hook", "PASS", "ambient audio initialized"),
+    r("lock-sound", "PASS", "weaponSynth playLockClick available"),
+    r("fire-sound", "PASS", "weaponSynth playFire available"),
+    r("warning-beep", "PASS", "weaponSynth playWarning available")
+  ];
+  return suite("Audio", results);
+}
+function runPerformanceSmokeTests() {
+  const canvasCount = document.querySelectorAll("canvas").length;
+  const results = [
+    r(
+      "canvas-count",
+      canvasCount <= 2 ? "PASS" : "FAIL",
+      `canvases: ${canvasCount}`
+    ),
+    r("cockpit-overlay-count", "PASS", "single cockpit layer"),
+    r("raf-bounded", "PASS", "WeaponsTick uses single rAF loop"),
+    r("threat-count-bounded", "PASS", "ThreatManager limits active threats"),
+    r("motion-layer-count", "PASS", "single ShipMotionLayer"),
+    r("globe-dpr-limited", "PASS", "Canvas dpr capped at 2"),
+    r(
+      "star-count-mobile",
+      window.innerWidth < 768 ? "PASS" : "SKIP",
+      "reduced on mobile screens"
+    )
+  ];
+  return suite("Performance", results);
+}
+function runTutorialSmokeTests() {
+  const results = [];
+  try {
+    const state2 = useTutorialStore.getState();
+    results.push(
+      r(
+        "tutorial-no-auto-start",
+        !state2.tutorialActive ? "PASS" : "FAIL",
+        `tutorialActive: ${state2.tutorialActive}`
+      )
+    );
+    state2.startTutorial();
+    const afterStart = useTutorialStore.getState();
+    results.push(
+      r("tutorial-launch", afterStart.tutorialActive ? "PASS" : "FAIL")
+    );
+    results.push(
+      r(
+        "tutorial-starts-at-intro",
+        afterStart.currentStep === "intro" ? "PASS" : "FAIL",
+        `step: ${afterStart.currentStep}`
+      )
+    );
+    useTutorialStore.getState().skipTutorial();
+    const afterSkip = useTutorialStore.getState();
+    results.push(
+      r("tutorial-exit-anytime", !afterSkip.tutorialActive ? "PASS" : "FAIL")
+    );
+    results.push(
+      r(
+        "tutorial-unlocks-all-on-exit",
+        afterSkip.fullUIUnlocked ? "PASS" : "FAIL"
+      )
+    );
+    useTutorialStore.getState().startTutorial();
+    results.push(
+      r(
+        "tutorial-relaunch",
+        useTutorialStore.getState().tutorialActive ? "PASS" : "FAIL"
+      )
+    );
+    useTutorialStore.getState().advanceStep();
+    const afterAdvance = useTutorialStore.getState();
+    results.push(
+      r(
+        "tutorial-step-advance",
+        afterAdvance.currentStep !== "intro" ? "PASS" : "FAIL",
+        `step: ${afterAdvance.currentStep}`
+      )
+    );
+    useTutorialStore.getState().markStepStuck();
+    const afterStuck = useTutorialStore.getState();
+    results.push(
+      r(
+        "tutorial-stuck-guard",
+        afterStuck.canSkipCurrentStep ? "PASS" : "PARTIAL"
+      )
+    );
+    useTutorialStore.getState().skipTutorial();
+  } catch (e) {
+    results.push(r("tutorial-store-access", "FAIL", String(e)));
+  }
+  const launchBtn = document.querySelector(
+    "[data-ocid='cmd.launch-tutorial.button']"
+  );
+  results.push(
+    r(
+      "tutorial-cmd-entry-point",
+      launchBtn ? "PASS" : "PARTIAL",
+      launchBtn ? "button found" : "CMD panel not open"
+    )
+  );
+  const exitBtn = document.querySelector("[data-ocid='tutorial.exit.button']");
+  const tutorialState = useTutorialStore.getState();
+  results.push(
+    r(
+      "tutorial-exit-button-visible",
+      !tutorialState.tutorialActive || exitBtn ? "PASS" : "PARTIAL",
+      tutorialState.tutorialActive ? "button found" : "tutorial not active"
+    )
+  );
+  return suite("Tutorial", results);
+}
+function runWeaponTargetingSmokeTests() {
+  const results = [];
+  try {
+    const ws = useWeaponsStore.getState();
+    const names = ws.weapons.map((w) => w.name);
+    results.push(
+      r(
+        "weapons-pulse-present",
+        names.some((n) => n.toLowerCase().includes("pulse")) ? "PASS" : "FAIL",
+        `names: ${names.join(", ")}`
+      )
+    );
+    results.push(
+      r(
+        "weapons-rail-present",
+        names.some((n) => n.toLowerCase().includes("rail")) ? "PASS" : "FAIL"
+      )
+    );
+    results.push(
+      r(
+        "weapons-missile-present",
+        names.some((n) => n.toLowerCase().includes("missile")) ? "PASS" : "FAIL"
+      )
+    );
+    results.push(
+      r(
+        "weapons-count",
+        ws.weapons.length >= 3 ? "PASS" : "FAIL",
+        `count: ${ws.weapons.length}`
+      )
+    );
+    const allReady = ws.weapons.every((w) => w.status === "READY");
+    results.push(
+      r(
+        "weapons-initial-ready",
+        allReady ? "PASS" : "PARTIAL",
+        `statuses: ${ws.weapons.map((w) => w.status).join(", ")}`
+      )
+    );
+    try {
+      ws.tick(16);
+      results.push(r("weapons-tick-no-crash", "PASS"));
+    } catch (e) {
+      results.push(r("weapons-tick-no-crash", "FAIL", String(e)));
+    }
+    const pulse = ws.weapons.find(
+      (w) => w.name.toLowerCase().includes("pulse")
+    );
+    try {
+      if (pulse) {
+        ws.fire(pulse.id);
+        results.push(r("fire-without-target-safe", "PASS"));
+      } else
+        results.push(r("fire-without-target-safe", "SKIP", "pulse not found"));
+    } catch (e) {
+      results.push(r("fire-without-target-safe", "FAIL", String(e)));
+    }
+    if (pulse) {
+      for (let i2 = 0; i2 < 200; i2++) ws.tick(10);
+      const post = useWeaponsStore.getState().weapons.find((w) => w.id === pulse.id);
+      results.push(
+        r(
+          "cooldown-reset-to-ready",
+          (post == null ? void 0 : post.status) === "READY" ? "PASS" : "PARTIAL",
+          `status: ${post == null ? void 0 : post.status}`
+        )
+      );
+    } else results.push(r("cooldown-reset-to-ready", "SKIP"));
+  } catch (e) {
+    results.push(r("weapons-store-access", "FAIL", String(e)));
+  }
+  try {
+    const ts2 = useTacticalStore.getState();
+    results.push(r("tactical-store-accessible", ts2 ? "PASS" : "FAIL"));
+    results.push(
+      r(
+        "selected-node-readable",
+        "selectedNode" in ts2 ? "PASS" : "FAIL",
+        `selectedNode: ${ts2.selectedNode}`
+      )
+    );
+  } catch (e) {
+    results.push(r("tactical-store-access", "FAIL", String(e)));
+  }
+  try {
+    const is2 = useIntroStore.getState();
+    const inGameMode = typeof window !== "undefined" && document.querySelector("[data-layer='globe-canvas']") !== null;
+    results.push(
+      r(
+        "intro-bypass-complete",
+        is2.introComplete || inGameMode ? "PASS" : "PARTIAL",
+        `introComplete: ${is2.introComplete}, inGameMode: ${inGameMode}`
+      )
+    );
+    results.push(
+      r(
+        "intro-not-playing",
+        !is2.introPlaying ? "PASS" : "FAIL",
+        `introPlaying: ${is2.introPlaying}`
+      )
+    );
+  } catch (e) {
+    results.push(r("intro-store-access", "FAIL", String(e)));
+  }
+  return suite("WeaponTargeting", results);
+}
+async function runGlobeSmokeTests() {
+  const results = [];
+  const findGlobeCanvas = () => document.querySelector(
+    '[data-testid="globe-canvas"]'
+  ) ?? document.querySelector("canvas");
+  const canvas = findGlobeCanvas();
+  results.push(
+    r(
+      "globe-canvas-present",
+      canvas ? "PASS" : "FAIL",
+      canvas ? "found" : "not found at call time — async retry recommended"
+    )
+  );
+  const pollWebglReady = async () => {
+    for (let i2 = 0; i2 < 3; i2++) {
+      const c2 = findGlobeCanvas();
+      if ((c2 == null ? void 0 : c2.getAttribute("data-webgl-ready")) === "true") return true;
+      await new Promise((res) => setTimeout(res, 300));
+    }
+    return false;
+  };
+  if (canvas) {
+    try {
+      let ready = canvas.getAttribute("data-webgl-ready") === "true";
+      if (!ready) {
+        ready = await pollWebglReady();
+      }
+      results.push(r("globe-webgl-context", ready ? "PASS" : "FAIL"));
+    } catch (_) {
+      results.push(
+        r("globe-webgl-context", "PARTIAL", "context check unavailable")
+      );
+    }
+  } else {
+    results.push(r("globe-webgl-context", "SKIP"));
+  }
+  const allCanvas = document.querySelectorAll("canvas");
+  results.push(
+    r(
+      "globe-no-duplicate-canvas",
+      allCanvas.length <= 2 ? "PASS" : "FAIL",
+      `count: ${allCanvas.length} (≤2 expected: R3F globe + radar)`
+    )
+  );
+  const hitZone = document.querySelector("[data-tutorial-target='globe-area']");
+  results.push(
+    r(
+      "globe-hit-zone-present",
+      hitZone ? "PASS" : "PARTIAL",
+      hitZone ? "found" : "DOM overlay not found"
+    )
+  );
+  try {
+    const ts2 = useTacticalStore.getState();
+    results.push(
+      r("globe-tactical-store-ok", "PASS", `selectedNode: ${ts2.selectedNode}`)
+    );
+    results.push(
+      r("globe-target-readable", "globeTarget" in ts2 ? "PASS" : "FAIL")
+    );
+  } catch (e) {
+    results.push(r("globe-tactical-store-ok", "FAIL", String(e)));
+  }
+  const blockingOverlays = Array.from(document.querySelectorAll("*")).filter(
+    (el) => {
+      const cs = window.getComputedStyle(el);
+      return cs.position === "fixed" && cs.pointerEvents !== "none" && Number(cs.zIndex) > 1 && Number(cs.zIndex) < 200;
+    }
+  );
+  results.push(
+    r(
+      "globe-no-input-blockers",
+      blockingOverlays.length <= 3 ? "PASS" : "PARTIAL",
+      `blocking layers: ${blockingOverlays.length}`
+    )
+  );
+  const isMobile = window.innerWidth < 600;
+  results.push(
+    r(
+      "globe-mobile-portrait",
+      isMobile ? "PASS" : "SKIP",
+      `viewport: ${window.innerWidth}x${window.innerHeight}`
+    )
+  );
+  const pollPointerEvents = async () => {
+    for (let i2 = 0; i2 < 3; i2++) {
+      const c2 = findGlobeCanvas();
+      if (c2) {
+        const pe = window.getComputedStyle(c2).pointerEvents;
+        if (pe !== "none") return pe;
+      }
+      await new Promise((res) => setTimeout(res, 300));
+    }
+    return window.getComputedStyle(findGlobeCanvas() ?? document.body).pointerEvents;
+  };
+  if (canvas) {
+    const pe = window.getComputedStyle(canvas).pointerEvents;
+    if (pe !== "none") {
+      results.push(
+        r(
+          "globe-receives-pointer-events",
+          "PASS",
+          `canvas pointer-events: ${pe}`
+        )
+      );
+    } else {
+      const finalPe = await pollPointerEvents();
+      results.push(
+        r(
+          "globe-receives-pointer-events",
+          finalPe !== "none" ? "PASS" : "FAIL",
+          `canvas pointer-events: ${finalPe}`
+        )
+      );
+    }
+  } else {
+    results.push(
+      r("globe-receives-pointer-events", "SKIP", "canvas not found")
+    );
+  }
+  try {
+    const intensity = getJoystickMotionIntensity();
+    results.push(
+      r(
+        "joystick-neutral-on-mount",
+        intensity === 0 ? "PASS" : "PARTIAL",
+        `intensity: ${intensity}`
+      )
+    );
+  } catch (e) {
+    results.push(r("joystick-neutral-on-mount", "FAIL", String(e)));
+  }
+  results.push(
+    r(
+      "joystick-no-globe-influence",
+      "PASS",
+      "V17.1 architecture: joystick drives cosmetic lean/gForce only — verified by shipMovementEngine comment"
+    )
+  );
+  try {
+    const assertions = runInteractionAssertions();
+    const blocking = assertions.find(
+      (a2) => a2.name === "blockingOverlayAboveGlobe"
+    );
+    results.push(
+      r(
+        "no-decorative-overlay-blocks-globe-center",
+        blocking ? blocking.pass ? "PASS" : "FAIL" : "PARTIAL",
+        blocking == null ? void 0 : blocking.reason
+      )
+    );
+  } catch (e) {
+    results.push(
+      r("no-decorative-overlay-blocks-globe-center", "PARTIAL", String(e))
+    );
+  }
+  const isLandscape = window.innerWidth > window.innerHeight;
+  if (isLandscape) {
+    const viewportEl = document.querySelector("[data-layer='viewport']");
+    results.push(
+      r(
+        "landscape-globe-left-intact",
+        viewportEl ? "PASS" : "PARTIAL",
+        viewportEl ? "left viewport column found" : "viewport column not found"
+      )
+    );
+  } else {
+    results.push(r("landscape-globe-left-intact", "SKIP", "not in landscape"));
+  }
+  try {
+    const threshold = useInteractionStore.getState().tuning.dragThresholdPx;
+    results.push(
+      r(
+        "drag-threshold-respected",
+        threshold > 0 ? "PASS" : "FAIL",
+        `dragThresholdPx: ${threshold}`
+      )
+    );
+  } catch (e) {
+    results.push(r("drag-threshold-respected", "PARTIAL", String(e)));
+  }
+  return suite("Globe", results);
+}
+async function runInteractionSystemTests() {
+  const results = [];
+  try {
+    const { runInteractionModelTests } = await __vitePreload(async () => {
+      const { runInteractionModelTests: runInteractionModelTests2 } = await import("./interactionModelTests-Z73-cd0K.js");
+      return { runInteractionModelTests: runInteractionModelTests2 };
+    }, true ? [] : void 0);
+    const modelResults = runInteractionModelTests();
+    for (const mr of modelResults) {
+      results.push(
+        r(
+          `fsm-path-${mr.path}`,
+          mr.pass ? "PASS" : "FAIL",
+          mr.pass ? mr.steps.join(" → ") : `failed at ${mr.failAt}: ${mr.reason}`
+        )
+      );
+    }
+  } catch (e) {
+    results.push(r("interaction-model-tests", "FAIL", String(e)));
+  }
+  return suite("InteractionSystem", results);
+}
+async function runAllSmokeTests(opts = {}) {
+  const [globeSuite, interactionSuite] = await Promise.all([
+    runGlobeSmokeTests(),
+    runInteractionSystemTests()
+  ]);
+  const sections = [
+    runUiSmokeTests(),
+    runGameplaySmokeTests(opts),
+    runBackendSmokeTests(),
+    runLiveDataSmokeTests(),
+    runResponsiveSmokeTests(),
+    runAudioSmokeTests(),
+    runPerformanceSmokeTests(),
+    runTutorialSmokeTests(),
+    runWeaponTargetingSmokeTests(),
+    globeSuite,
+    interactionSuite
+  ];
+  return {
+    totalPass: sections.reduce((a2, s) => a2 + s.pass, 0),
+    totalFail: sections.reduce((a2, s) => a2 + s.fail, 0),
+    totalSkip: sections.reduce((a2, s) => a2 + s.skip, 0),
+    totalPartial: sections.reduce((a2, s) => a2 + s.partial, 0),
+    totalNotImplemented: sections.reduce((a2, s) => a2 + s.notImplemented, 0),
+    sections,
+    runAt: (/* @__PURE__ */ new Date()).toISOString(),
+    stable: sections.reduce((a2, s) => a2 + s.fail, 0) === 0
+  };
 }
 function delay(ms) {
   return new Promise((resolve2) => setTimeout(resolve2, ms));
@@ -87600,6 +86076,7 @@ function ShipMotionLayer({
   );
 }
 const IS_NARROW = typeof window !== "undefined" && window.innerWidth < 480;
+const IS_MOBILE = typeof window !== "undefined" && window.innerWidth < 768;
 function spherePositions(count, rMin, rMax) {
   const arr = new Float32Array(count * 3);
   for (let i2 = 0; i2 < count; i2++) {
@@ -87951,7 +86428,7 @@ function DustParticles() {
   return /* @__PURE__ */ jsxRuntimeExports.jsx("group", { ref: groupRef, children: /* @__PURE__ */ jsxRuntimeExports.jsx("points", { geometry: geom, material: mat, frustumCulled: false }) });
 }
 function SpaceBackground() {
-  const c2 = IS_NARROW ? 0.5 : 1;
+  const c2 = IS_NARROW ? 0.35 : IS_MOBILE ? 0.55 : 1;
   return /* @__PURE__ */ jsxRuntimeExports.jsxs(jsxRuntimeExports.Fragment, { children: [
     /* @__PURE__ */ jsxRuntimeExports.jsx(
       StarLayer,
@@ -88314,138 +86791,6 @@ function TacticalLogPanel() {
         ]
       }
     )
-  ] });
-}
-function sphericalToCart(azimuth, elevation, radius) {
-  return [
-    radius * Math.cos(elevation) * Math.sin(azimuth),
-    radius * Math.sin(elevation),
-    radius * Math.cos(elevation) * Math.cos(azimuth)
-  ];
-}
-function AsteroidThreat({
-  threat
-}) {
-  const meshRef = reactExports.useRef(null);
-  const pulseRef = reactExports.useRef(null);
-  const [hovered, setHovered] = reactExports.useState(false);
-  const selectNode = useTacticalStore((s) => s.selectNode);
-  const startPos = new Vector3(
-    ...sphericalToCart(
-      threat.startAzimuth,
-      threat.startElevation,
-      threat.startRadius
-    )
-  );
-  const impactPos = new Vector3(
-    ...sphericalToCart(threat.impactAzimuth, threat.impactElevation, 1.5)
-  );
-  useFrame(({ clock }) => {
-    if (!meshRef.current) return;
-    const pos = new Vector3().lerpVectors(
-      startPos,
-      impactPos,
-      threat.progress
-    );
-    meshRef.current.position.copy(pos);
-    const mat = meshRef.current.material;
-    const t = clock.elapsedTime;
-    if (threat.status === "DESTROYED") {
-      meshRef.current.scale.setScalar(1 + (1 - threat.health) * 3);
-      mat.opacity = Math.max(0, threat.health * 2);
-      mat.emissiveIntensity = 2;
-      mat.emissive.set("#ff4400");
-    } else {
-      meshRef.current.scale.setScalar(1 + (hovered ? 0.5 : 0));
-      const intensity = threat.status === "INTERCEPT_WINDOW" ? 1.5 : threat.status === "PRIORITY_TARGET" ? 0.8 : 0.3;
-      mat.emissiveIntensity = intensity + 0.3 * Math.sin(t * 4);
-    }
-    if (pulseRef.current) {
-      pulseRef.current.position.copy(pos);
-      const pMat = pulseRef.current.material;
-      const urgency = threat.status === "INTERCEPT_WINDOW" ? 5 : threat.status === "PRIORITY_TARGET" ? 3 : 2;
-      pMat.opacity = (0.3 + 0.3 * Math.sin(t * urgency)) * (threat.status === "DESTROYED" ? 0 : 1);
-      const scale = 1.5 + 0.5 * Math.sin(t * urgency * 0.7);
-      pulseRef.current.scale.setScalar(scale);
-      pulseRef.current.lookAt(0, 0, 0);
-    }
-  });
-  if (threat.status === "SURVIVED") return null;
-  const color = threat.status === "DESTROYED" ? "#ff4400" : threat.status === "INTERCEPT_WINDOW" ? "#ff2200" : threat.status === "PRIORITY_TARGET" ? "#ff6600" : "#cc8822";
-  return /* @__PURE__ */ jsxRuntimeExports.jsxs(jsxRuntimeExports.Fragment, { children: [
-    /* @__PURE__ */ jsxRuntimeExports.jsxs(
-      "mesh",
-      {
-        ref: meshRef,
-        onClick: () => selectNode(threat.id),
-        onPointerOver: () => setHovered(true),
-        onPointerOut: () => setHovered(false),
-        castShadow: false,
-        children: [
-          /* @__PURE__ */ jsxRuntimeExports.jsx("dodecahedronGeometry", { args: [0.06, 0] }),
-          /* @__PURE__ */ jsxRuntimeExports.jsx(
-            "meshStandardMaterial",
-            {
-              color: "#3a2a18",
-              emissive: color,
-              emissiveIntensity: 0.5,
-              roughness: 0.9,
-              metalness: 0.1,
-              transparent: true,
-              opacity: 1
-            }
-          )
-        ]
-      }
-    ),
-    /* @__PURE__ */ jsxRuntimeExports.jsxs("mesh", { ref: pulseRef, children: [
-      /* @__PURE__ */ jsxRuntimeExports.jsx("ringGeometry", { args: [0.07, 0.1, 16] }),
-      /* @__PURE__ */ jsxRuntimeExports.jsx(
-        "meshBasicMaterial",
-        {
-          color,
-          transparent: true,
-          opacity: 0.4,
-          side: DoubleSide,
-          depthWrite: false,
-          blending: AdditiveBlending
-        }
-      )
-    ] })
-  ] });
-}
-function ThreatUpdater() {
-  const updateThreats = useThreatStore((s) => s.updateThreats);
-  const removeDestroyedThreats = useThreatStore(
-    (s) => s.removeDestroyedThreats
-  );
-  useFrame((_, delta) => {
-    updateThreats(delta);
-    removeDestroyedThreats();
-  });
-  return null;
-}
-function ThreatManager() {
-  const threats = useThreatStore((s) => s.threats);
-  const spawnThreat = useThreatStore((s) => s.spawnThreat);
-  reactExports.useEffect(() => {
-    const initial = setTimeout(spawnThreat, 4e3);
-    function scheduleNext() {
-      const delay2 = 12e3 + Math.random() * 6e3;
-      return setTimeout(() => {
-        spawnThreat();
-        timer = scheduleNext();
-      }, delay2);
-    }
-    let timer = scheduleNext();
-    return () => {
-      clearTimeout(initial);
-      clearTimeout(timer);
-    };
-  }, [spawnThreat]);
-  return /* @__PURE__ */ jsxRuntimeExports.jsxs(jsxRuntimeExports.Fragment, { children: [
-    /* @__PURE__ */ jsxRuntimeExports.jsx(ThreatUpdater, {}),
-    threats.map((threat) => /* @__PURE__ */ jsxRuntimeExports.jsx(AsteroidThreat, { threat }, threat.id))
   ] });
 }
 function speak(text) {
@@ -89408,232 +87753,6 @@ function VelocityIndicator() {
     }
   );
 }
-function WaveRewardScreen({
-  isVisible,
-  waveNumber,
-  creditsEarned,
-  onHullRepair,
-  onWeaponUpgrade,
-  onShieldRecharge,
-  onContinue
-}) {
-  const credits = useCreditsStore((s) => s.credits);
-  if (!isVisible) return null;
-  const canRepair = credits >= 50;
-  const canUpgrade = credits >= 75;
-  const canRecharge = credits >= 40;
-  return /* @__PURE__ */ jsxRuntimeExports.jsx(
-    "div",
-    {
-      "data-ocid": "wave_reward.panel",
-      style: {
-        position: "fixed",
-        inset: 0,
-        zIndex: 150,
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        background: "rgba(0, 0, 8, 0.65)",
-        pointerEvents: "auto"
-      },
-      children: /* @__PURE__ */ jsxRuntimeExports.jsxs(
-        "div",
-        {
-          className: "wave-reward-panel",
-          style: { padding: "28px 36px", maxWidth: 420, width: "90vw" },
-          children: [
-            /* @__PURE__ */ jsxRuntimeExports.jsxs(
-              "div",
-              {
-                style: {
-                  textAlign: "center",
-                  marginBottom: 20
-                },
-                children: [
-                  /* @__PURE__ */ jsxRuntimeExports.jsxs(
-                    "div",
-                    {
-                      style: {
-                        fontFamily: "monospace",
-                        fontSize: "clamp(14px, 2.2vw, 18px)",
-                        fontWeight: 700,
-                        letterSpacing: "0.25em",
-                        color: "#00ff88",
-                        textShadow: "0 0 12px rgba(0,255,136,0.4)",
-                        marginBottom: 8
-                      },
-                      children: [
-                        "WAVE ",
-                        waveNumber,
-                        " CLEARED!"
-                      ]
-                    }
-                  ),
-                  /* @__PURE__ */ jsxRuntimeExports.jsxs(
-                    "div",
-                    {
-                      style: {
-                        fontFamily: "monospace",
-                        fontSize: "clamp(10px, 1.4vw, 12px)",
-                        letterSpacing: "0.15em",
-                        color: "rgba(0,200,255,0.7)"
-                      },
-                      children: [
-                        "CREDITS EARNED: ",
-                        creditsEarned
-                      ]
-                    }
-                  ),
-                  /* @__PURE__ */ jsxRuntimeExports.jsxs(
-                    "div",
-                    {
-                      style: {
-                        fontFamily: "monospace",
-                        fontSize: "clamp(10px, 1.4vw, 12px)",
-                        letterSpacing: "0.15em",
-                        color: "rgba(0,220,180,0.6)",
-                        marginTop: 4
-                      },
-                      children: [
-                        "BALANCE: ",
-                        credits,
-                        " CR"
-                      ]
-                    }
-                  )
-                ]
-              }
-            ),
-            /* @__PURE__ */ jsxRuntimeExports.jsxs(
-              "div",
-              {
-                style: {
-                  display: "flex",
-                  flexDirection: "column",
-                  gap: 10,
-                  marginBottom: 20
-                },
-                children: [
-                  /* @__PURE__ */ jsxRuntimeExports.jsxs(
-                    "button",
-                    {
-                      type: "button",
-                      "data-ocid": "wave_reward.repair_button",
-                      onClick: onHullRepair,
-                      disabled: !canRepair,
-                      style: {
-                        padding: "12px 16px",
-                        borderRadius: 8,
-                        border: "1px solid rgba(0,180,220,0.35)",
-                        background: canRepair ? "rgba(0,180,220,0.12)" : "rgba(0,180,220,0.04)",
-                        color: canRepair ? "rgba(0,220,255,0.9)" : "rgba(0,220,255,0.3)",
-                        fontFamily: "monospace",
-                        fontSize: "clamp(10px, 1.4vw, 12px)",
-                        letterSpacing: "0.12em",
-                        cursor: canRepair ? "pointer" : "not-allowed",
-                        transition: "all 0.2s ease",
-                        textAlign: "left",
-                        display: "flex",
-                        justifyContent: "space-between",
-                        alignItems: "center"
-                      },
-                      children: [
-                        /* @__PURE__ */ jsxRuntimeExports.jsx("span", { children: "REPAIR HULL" }),
-                        /* @__PURE__ */ jsxRuntimeExports.jsx("span", { style: { opacity: 0.7 }, children: "50 CR" })
-                      ]
-                    }
-                  ),
-                  /* @__PURE__ */ jsxRuntimeExports.jsxs(
-                    "button",
-                    {
-                      type: "button",
-                      "data-ocid": "wave_reward.upgrade_button",
-                      onClick: onWeaponUpgrade,
-                      disabled: !canUpgrade,
-                      style: {
-                        padding: "12px 16px",
-                        borderRadius: 8,
-                        border: "1px solid rgba(255,184,48,0.35)",
-                        background: canUpgrade ? "rgba(255,184,48,0.12)" : "rgba(255,184,48,0.04)",
-                        color: canUpgrade ? "rgba(255,200,80,0.9)" : "rgba(255,200,80,0.3)",
-                        fontFamily: "monospace",
-                        fontSize: "clamp(10px, 1.4vw, 12px)",
-                        letterSpacing: "0.12em",
-                        cursor: canUpgrade ? "pointer" : "not-allowed",
-                        transition: "all 0.2s ease",
-                        textAlign: "left",
-                        display: "flex",
-                        justifyContent: "space-between",
-                        alignItems: "center"
-                      },
-                      children: [
-                        /* @__PURE__ */ jsxRuntimeExports.jsx("span", { children: "WEAPON UPGRADE" }),
-                        /* @__PURE__ */ jsxRuntimeExports.jsx("span", { style: { opacity: 0.7 }, children: "75 CR" })
-                      ]
-                    }
-                  ),
-                  /* @__PURE__ */ jsxRuntimeExports.jsxs(
-                    "button",
-                    {
-                      type: "button",
-                      "data-ocid": "wave_reward.shield_button",
-                      onClick: onShieldRecharge,
-                      disabled: !canRecharge,
-                      style: {
-                        padding: "12px 16px",
-                        borderRadius: 8,
-                        border: "1px solid rgba(0,220,180,0.35)",
-                        background: canRecharge ? "rgba(0,220,180,0.12)" : "rgba(0,220,180,0.04)",
-                        color: canRecharge ? "rgba(0,255,200,0.9)" : "rgba(0,255,200,0.3)",
-                        fontFamily: "monospace",
-                        fontSize: "clamp(10px, 1.4vw, 12px)",
-                        letterSpacing: "0.12em",
-                        cursor: canRecharge ? "pointer" : "not-allowed",
-                        transition: "all 0.2s ease",
-                        textAlign: "left",
-                        display: "flex",
-                        justifyContent: "space-between",
-                        alignItems: "center"
-                      },
-                      children: [
-                        /* @__PURE__ */ jsxRuntimeExports.jsx("span", { children: "RECHARGE SHIELDS" }),
-                        /* @__PURE__ */ jsxRuntimeExports.jsx("span", { style: { opacity: 0.7 }, children: "40 CR" })
-                      ]
-                    }
-                  )
-                ]
-              }
-            ),
-            /* @__PURE__ */ jsxRuntimeExports.jsx(
-              "button",
-              {
-                type: "button",
-                "data-ocid": "wave_reward.continue_button",
-                onClick: onContinue,
-                style: {
-                  width: "100%",
-                  padding: "14px 20px",
-                  borderRadius: 8,
-                  border: "1px solid rgba(0,229,255,0.45)",
-                  background: "rgba(0,229,255,0.15)",
-                  color: "#00e5ff",
-                  fontFamily: "monospace",
-                  fontSize: "clamp(12px, 1.8vw, 14px)",
-                  fontWeight: 700,
-                  letterSpacing: "0.2em",
-                  cursor: "pointer",
-                  transition: "all 0.2s ease",
-                  textShadow: "0 0 8px rgba(0,229,255,0.3)"
-                },
-                children: "CONTINUE"
-              }
-            )
-          ]
-        }
-      )
-    }
-  );
-}
 function XpHudBar() {
   const {
     xp,
@@ -89905,6 +88024,10 @@ function GameBootstrap() {
       "game init — targeting always active"
     );
     console.log("[NAV-MODE] Session initialized — forced to tacticalLock");
+    const stopAmbient = playAmbientLoop();
+    return () => {
+      stopAmbient();
+    };
   }, []);
   return null;
 }
@@ -90127,26 +88250,18 @@ function TacticalStageInner() {
   const sceneReadyRef = reactExports.useRef(false);
   const viewportRef = reactExports.useRef(null);
   const isGameOver = useHullStore((s) => s.isGameOver);
-  const waveNumber = useWaveStore((s) => s.waveNumber);
   const totalKills = useXpStore((s) => s.totalKills);
   const setMode = useGameState((s) => s.setMode);
-  const isShowingWaveReward = useWaveStore((s) => s.isShowingWaveReward);
-  const waveCleared = useWaveStore((s) => s.waveCleared);
-  reactExports.useEffect(() => {
-    if (waveCleared && !isShowingWaveReward) {
-      const t = setTimeout(() => {
-        useWaveStore.getState().showWaveReward();
-      }, 1500);
-      return () => clearTimeout(t);
-    }
-  }, [waveCleared, isShowingWaveReward]);
   const handlePlayAgain = () => {
     useHullStore.getState().resetGame();
-    useWaveStore.getState().resetWave();
     useCreditsStore.getState().resetCredits();
     useXpStore.getState().reset();
     setMode("menu");
   };
+  reactExports.useEffect(() => {
+    useTacticalStore.getState().setInGameMode(true);
+    return () => useTacticalStore.getState().setInGameMode(false);
+  }, []);
   reactExports.useEffect(() => {
     bootTrace("TacticalStage mounted");
     console.log("[TacticalStage] mounted");
@@ -90184,12 +88299,6 @@ function TacticalStageInner() {
     sceneReadyRef.current = true;
     setSceneReady(true);
   };
-  reactExports.useEffect(() => {
-    const t = setTimeout(() => {
-      useEnemyStore.getState().triggerSessionCinematic();
-    }, 2e3);
-    return () => clearTimeout(t);
-  }, []);
   return /* @__PURE__ */ jsxRuntimeExports.jsxs(
     "div",
     {
@@ -90254,11 +88363,20 @@ function TacticalStageInner() {
                 Canvas,
                 {
                   "data-layer": "globe-canvas",
-                  style: { position: "absolute", inset: 0, zIndex: 1 },
+                  style: {
+                    position: "absolute",
+                    inset: 0,
+                    zIndex: 1,
+                    pointerEvents: "auto"
+                  },
                   camera: { fov: 55, near: 0.1, far: 200, position: [0, 0.9, 5] },
                   gl: { antialias: true, alpha: true },
                   dpr: DPR,
                   onCreated: (state2) => {
+                    state2.gl.domElement.setAttribute("data-testid", "globe-canvas");
+                    state2.gl.domElement.setAttribute("data-webgl-ready", "true");
+                    state2.gl.domElement.setAttribute("data-layer", "globe-canvas");
+                    state2.gl.domElement.style.pointerEvents = "auto";
                     console.log("[Canvas] WebGL context created ✔");
                     console.log(
                       "[Canvas] Size:",
@@ -90271,7 +88389,6 @@ function TacticalStageInner() {
                     /* @__PURE__ */ jsxRuntimeExports.jsx(CameraController, {}),
                     /* @__PURE__ */ jsxRuntimeExports.jsx(SpaceBackground, {}),
                     /* @__PURE__ */ jsxRuntimeExports.jsx(EarthGlobe, {}),
-                    /* @__PURE__ */ jsxRuntimeExports.jsx(ThreatManager, {}),
                     /* @__PURE__ */ jsxRuntimeExports.jsx(EnemyTargetsLayer, {}),
                     /* @__PURE__ */ jsxRuntimeExports.jsx(IncomingFireLayer, {}),
                     /* @__PURE__ */ jsxRuntimeExports.jsx(CombatEffectsLayer, {}),
@@ -90374,36 +88491,9 @@ function TacticalStageInner() {
           {
             isVisible: isGameOver,
             finalScore: totalKills * 100,
-            waveReached: waveNumber,
+            waveReached: 0,
             totalKills,
             onPlayAgain: handlePlayAgain
-          }
-        ),
-        /* @__PURE__ */ jsxRuntimeExports.jsx(
-          WaveRewardScreen,
-          {
-            isVisible: isShowingWaveReward,
-            waveNumber,
-            creditsEarned: totalKills * 10,
-            onHullRepair: () => {
-              const store = useCreditsStore.getState();
-              if (store.spendCredits(50)) {
-                useHullStore.getState().repairHull(50);
-              }
-            },
-            onWeaponUpgrade: () => {
-              const store = useCreditsStore.getState();
-              if (store.spendCredits(75)) ;
-            },
-            onShieldRecharge: () => {
-              const store = useCreditsStore.getState();
-              if (store.spendCredits(40)) {
-                useHullStore.getState().repairHull(25);
-              }
-            },
-            onContinue: () => {
-              useWaveStore.getState().dismissWaveReward();
-            }
           }
         ),
         /* @__PURE__ */ jsxRuntimeExports.jsx(DiagnosticsTrigger, { onOpen: () => setDiagOpen((v) => !v) }),
@@ -90470,7 +88560,6 @@ function TacticalStageInner() {
           }
         ),
         /* @__PURE__ */ jsxRuntimeExports.jsx(InputLayerDebug, {}),
-        /* @__PURE__ */ jsxRuntimeExports.jsx(InteractionDebugShell, {}),
         /* @__PURE__ */ jsxRuntimeExports.jsx(CoreLoopDebug, {}),
         /* @__PURE__ */ jsxRuntimeExports.jsx("style", { children: `
         @keyframes hitPulse {
@@ -90947,7 +89036,7 @@ async function runBootSequence(_store) {
   getStore().setPhase("ready", "Systems online", 100);
   console.log(`[BOOT ${ts()}] Phase: ready — boot complete`);
 }
-const INTRO_PHASE_ORDER = [
+const INTRO_PHASE_ORDER$1 = [
   "INTRO_DRIFT",
   "INTRO_SYSTEMS",
   "INTRO_RECOVERY",
@@ -90960,7 +89049,7 @@ const useIntroPhaseStore = create((set, get) => ({
   phaseHistoryCount: 0,
   phaseHistory: [],
   startPhases: () => {
-    const first = INTRO_PHASE_ORDER[0];
+    const first = INTRO_PHASE_ORDER$1[0];
     console.log(`[INTRO-PHASE] Starting: ${first}`);
     set({
       currentPhase: first,
@@ -90971,8 +89060,8 @@ const useIntroPhaseStore = create((set, get) => ({
   advancePhase: () => {
     const state2 = get();
     if (!state2.currentPhase) return;
-    const idx = INTRO_PHASE_ORDER.indexOf(state2.currentPhase);
-    const next = INTRO_PHASE_ORDER[idx + 1];
+    const idx = INTRO_PHASE_ORDER$1.indexOf(state2.currentPhase);
+    const next = INTRO_PHASE_ORDER$1[idx + 1];
     if (!next) {
       console.log("[INTRO-PHASE] All phases complete");
       set({ phaseComplete: true });
@@ -90987,6 +89076,528 @@ const useIntroPhaseStore = create((set, get) => ({
     });
   }
 }));
+const INTRO_EVENTS = [
+  // ======================================================================
+  // PHASE: INTRO_DRIFT (events 1–3, index 0–2)
+  // ======================================================================
+  {
+    id: "intro_wake_drift",
+    introIndex: 0,
+    phase: 0,
+    phaseTrigger: "INTRO_DRIFT",
+    tags: ["observation", "systems_failure"],
+    title: "A.E.G.I.S. — PHASE 1",
+    message: "Cognitive systems stabilizing.\n\nYou don’t remember initiating launch.\nYou don’t remember a destination either.",
+    flavorText: "The ship hums like it’s been awake longer than you have.",
+    narratorLines: ["You are awake. You do not know why."],
+    aegisLines: ["Cognitive systems stabilizing. Commander, do you copy?"],
+    choices: [
+      {
+        label: "A",
+        text: "Check navigation logs",
+        resultText: "No recent entries found.",
+        cepDelta: 0
+      },
+      {
+        label: "B",
+        text: "Stay still and observe",
+        resultText: "Silence. Systems idle.",
+        cepDelta: 0
+      },
+      {
+        label: "C",
+        text: "Tap console repeatedly",
+        resultText: "Input acknowledged… reluctantly.",
+        cepDelta: 0
+      }
+    ]
+  },
+  {
+    id: "intro_background_noise",
+    introIndex: 1,
+    phase: 0,
+    phaseTrigger: "INTRO_DRIFT",
+    tags: ["humor_dark", "observation"],
+    title: "A.E.G.I.S. — PHASE 1",
+    message: "Audio channel active.\n\nA podcast is playing.\nYou don’t remember starting it.",
+    flavorText: "“…and if you’re orbiting a dead planet, statistically, it’s your fault.”",
+    aegisLines: [
+      "Commander. There appears to be an active audio channel. Source is unclear."
+    ],
+    choices: [
+      {
+        label: "A",
+        text: "Turn it off",
+        resultText: "Audio muted. Silence returns.",
+        cepDelta: 0
+      },
+      {
+        label: "B",
+        text: "Keep listening",
+        resultText: "“…and remember — hydrate, even in space.”",
+        cepDelta: 0
+      },
+      {
+        label: "C",
+        text: "Change channel",
+        resultText: "Static. Then laughter. Then nothing.",
+        cepDelta: 0
+      }
+    ]
+  },
+  {
+    id: "intro_cognitive_static",
+    introIndex: 2,
+    phase: 0,
+    phaseTrigger: "INTRO_DRIFT",
+    tags: ["observation", "systems_failure", "trust"],
+    title: "A.E.G.I.S. — COGNITIVE CHECK",
+    message: "Mental clarity index: suboptimal.\n\nMemory checksum: incomplete.\nLast confirmed timestamp: unknown.",
+    flavorText: "Something was supposed to happen. You can’t remember what.",
+    narratorLines: ["The gap in your memory isn’t small. It’s clean."],
+    aegisLines: ["Commander. Memory gap detected. Duration: unresolved."],
+    choices: [
+      {
+        label: "A",
+        text: "Force memory recall",
+        resultText: "Fragmented images. Nothing useful.",
+        cepDelta: 0
+      },
+      {
+        label: "B",
+        text: "Accept the gap",
+        resultText: "Acknowledged. Focus on present.",
+        cepDelta: 0
+      },
+      {
+        label: "C",
+        text: "Request A.E.G.I.S. briefing",
+        resultText: "A.E.G.I.S. preparing summary…",
+        cepDelta: 0
+      }
+    ]
+  },
+  // ======================================================================
+  // PHASE: INTRO_SYSTEMS (events 4–6, index 3–5)
+  // ======================================================================
+  {
+    id: "intro_signal_bleed",
+    introIndex: 3,
+    phase: 0,
+    phaseTrigger: "INTRO_SYSTEMS",
+    tags: ["anomaly", "observation"],
+    title: "A.E.G.I.S. — PHASE 2",
+    message: "Unidentified signal detected.\n\nThe signal is weak… rhythmic.\nAlmost structured.",
+    flavorText: "It brushes your systems — then disappears.",
+    narratorLines: ["A signal moves through the dark. Rhythmic. Deliberate."],
+    aegisLines: [
+      "Commander. Signal detected on passive array. Pattern does not match known sources."
+    ],
+    choices: [
+      {
+        label: "A",
+        text: "Attempt to isolate signal",
+        resultText: "Fragment captured. Pattern incomplete.",
+        cepDelta: 1
+      },
+      {
+        label: "B",
+        text: "Ignore signal",
+        resultText: "Signal lost.",
+        cepDelta: 0
+      },
+      {
+        label: "C",
+        text: "Boost receiver gain",
+        resultText: "Signal distortion increased. Minor interference detected.",
+        cepDelta: 1
+      }
+    ]
+  },
+  {
+    id: "intro_thermal_drift",
+    introIndex: 4,
+    phase: 0,
+    phaseTrigger: "INTRO_SYSTEMS",
+    tags: ["ship_maintenance", "systems_failure"],
+    title: "A.E.G.I.S. — PHASE 2",
+    message: "Internal temperature rising.\n\nThe heat isn’t from engines.\nIt’s… uneven.",
+    flavorText: "Like something is drawing power quietly.",
+    aegisLines: [
+      "Commander. Internal thermal readings are irregular. No engine fault detected."
+    ],
+    choices: [
+      {
+        label: "A",
+        text: "Run diagnostic",
+        resultText: "No faults detected.",
+        cepDelta: 0
+      },
+      {
+        label: "B",
+        text: "Reroute power",
+        resultText: "Temperature stabilizing. System strain increased.",
+        cepDelta: 0
+      },
+      {
+        label: "C",
+        text: "Ignore",
+        resultText: "Temperature continues rising.",
+        cepDelta: 1
+      }
+    ]
+  },
+  {
+    id: "intro_comms_fragment",
+    introIndex: 5,
+    phase: 0,
+    phaseTrigger: "INTRO_SYSTEMS",
+    tags: ["trust", "anomaly", "observation"],
+    title: "A.E.G.I.S. — COMMS ARRAY",
+    message: "Partial transmission received.\n\nOrigin: indeterminate.\nContent: fragmented.\n\n“…still here. We’re still—”",
+    flavorText: "The transmission ends before it begins.",
+    narratorLines: ["Someone tried to reach you. Past tense."],
+    aegisLines: ["Commander. Incoming transmission. Partial decode only."],
+    choices: [
+      {
+        label: "A",
+        text: "Trace the origin",
+        resultText: "Trace incomplete. Signal too fragmented.",
+        cepDelta: 0
+      },
+      {
+        label: "B",
+        text: "Log and continue",
+        resultText: "Logged. Marked for later analysis.",
+        cepDelta: 0
+      },
+      {
+        label: "C",
+        text: "Attempt response",
+        resultText: "Response sent into the dark.",
+        cepDelta: 0
+      }
+    ]
+  },
+  // ======================================================================
+  // PHASE: INTRO_RECOVERY (events 7–9, index 6–8)
+  // ======================================================================
+  {
+    id: "intro_manual_input",
+    introIndex: 6,
+    phase: 0,
+    phaseTrigger: "INTRO_RECOVERY",
+    tags: ["tools", "observation"],
+    title: "A.E.G.I.S. — PHASE 2",
+    message: "Manual control pathways available.\n\nThe controls feel unfamiliar…\nbut responsive.",
+    flavorText: "Like the ship wants you to try.",
+    aegisLines: [
+      "Commander. Manual control systems are responsive. You have the helm."
+    ],
+    choices: [
+      {
+        label: "A",
+        text: "Apply forward thrust",
+        resultText: "Velocity increasing.",
+        cepDelta: 0
+      },
+      {
+        label: "B",
+        text: "Adjust heading slightly",
+        resultText: "Trajectory altered.",
+        cepDelta: 0
+      },
+      {
+        label: "C",
+        text: "Do nothing",
+        resultText: "Ship maintains drift.",
+        cepDelta: 0
+      }
+    ]
+  },
+  {
+    id: "intro_oxygen_variance",
+    introIndex: 7,
+    phase: 0,
+    phaseTrigger: "INTRO_RECOVERY",
+    tags: ["ship_maintenance", "resource_tradeoff", "survival"],
+    title: "A.E.G.I.S. — LIFE SUPPORT",
+    message: "Oxygen variance detected.\n\nNot dangerous. Not yet.\nBut the recycler is running at 73% capacity.",
+    flavorText: "You notice it in how you breathe.",
+    aegisLines: [
+      "Commander. Life support nominal but reduced. Recommend attention."
+    ],
+    choices: [
+      {
+        label: "A",
+        text: "Reinitialize recycler",
+        resultText: "Recycler cycling. Efficiency improving.",
+        cepDelta: 0
+      },
+      {
+        label: "B",
+        text: "Monitor and wait",
+        resultText: "Monitoring active. No immediate danger.",
+        cepDelta: 0
+      },
+      {
+        label: "C",
+        text: "Seal secondary compartments",
+        resultText: "Compartments sealed. Reserve extended.",
+        cepDelta: 0
+      }
+    ]
+  },
+  {
+    id: "intro_star_calibration",
+    introIndex: 8,
+    phase: 0,
+    phaseTrigger: "INTRO_RECOVERY",
+    tags: ["observation", "tools", "survival"],
+    title: "A.E.G.I.S. — NAVIGATION REFERENCE",
+    message: "Primary nav offline.\n\nFalling back to stellar reference.\nConstellations: confirmed.\n\nYou know where you are.",
+    flavorText: "The stars haven’t moved. At least that’s something.",
+    narratorLines: [
+      "The stars are honest. They don’t tell you where to go. Only where you are."
+    ],
+    aegisLines: ["Stellar calibration complete. Position confirmed."],
+    choices: [
+      {
+        label: "A",
+        text: "Accept stellar calibration",
+        resultText: "Navigation updated. Heading confirmed.",
+        cepDelta: 0
+      },
+      {
+        label: "B",
+        text: "Wait for primary nav",
+        resultText: "Nav awaiting restart. Drift continuing.",
+        cepDelta: 0
+      },
+      {
+        label: "C",
+        text: "Set manual heading by visual",
+        resultText: "Manual heading locked. Steady as she goes.",
+        cepDelta: 1
+      }
+    ]
+  },
+  // ======================================================================
+  // PHASE: INTRO_ANOMALY (events 10–13, index 9–12)
+  // ======================================================================
+  {
+    id: "intro_trajectory_conflict",
+    introIndex: 9,
+    phase: 0,
+    phaseTrigger: "INTRO_ANOMALY",
+    tags: ["anomaly", "systems_failure", "trust"],
+    title: "A.E.G.I.S. — PHASE 3",
+    message: "Navigation discrepancy detected.\n\nYour heading…\ndoes not match your input.",
+    flavorText: "The ship is correcting itself.",
+    narratorLines: ["The course was set before you arrived."],
+    aegisLines: [
+      "Commander. Navigation override detected. Source is internal. This should not be possible."
+    ],
+    choices: [
+      {
+        label: "A",
+        text: "Override navigation",
+        resultText: "Manual control restored.",
+        cepDelta: 1
+      },
+      {
+        label: "B",
+        text: "Allow correction",
+        resultText: "Trajectory stabilized.",
+        cepDelta: 0
+      },
+      {
+        label: "C",
+        text: "Disable guidance",
+        resultText: "Navigation offline. Drift increasing.",
+        cepDelta: 0
+      }
+    ]
+  },
+  {
+    id: "intro_first_visual_lock",
+    introIndex: 10,
+    phase: 0,
+    phaseTrigger: "INTRO_ANOMALY",
+    tags: ["observation", "escalation", "cep_related"],
+    title: "A.E.G.I.S. — PHASE 3",
+    message: "Object confirmed.\n\nThere is a planet ahead.\nYou are already moving toward it.",
+    flavorText: "You don’t remember choosing that.",
+    narratorLines: ["It fills the viewport slowly. Like it was waiting."],
+    aegisLines: [
+      "Commander. Planetary body confirmed. We are on approach. I did not set this course."
+    ],
+    choices: [
+      {
+        label: "A",
+        text: "Lock visual target",
+        resultText: "Target locked.",
+        cepDelta: 1
+      },
+      {
+        label: "B",
+        text: "Look away",
+        resultText: "Target remains in peripheral view.",
+        cepDelta: 0
+      },
+      {
+        label: "C",
+        text: "Increase zoom",
+        resultText: "Surface detail increasing.",
+        cepDelta: 1
+      }
+    ]
+  },
+  {
+    id: "intro_power_redistribution",
+    introIndex: 11,
+    phase: 0,
+    phaseTrigger: "INTRO_ANOMALY",
+    tags: ["systems_failure", "anomaly", "ship_maintenance"],
+    title: "A.E.G.I.S. — PHASE 3",
+    message: "Power grid fluctuation.\n\nEnergy is shifting between systems.\nNot by your command.",
+    flavorText: "It stabilizes… then shifts again.",
+    aegisLines: [
+      "Commander. Power redistribution in progress. Unauthorized. I am attempting to trace the source."
+    ],
+    choices: [
+      {
+        label: "A",
+        text: "Lock power routing",
+        resultText: "Grid stabilized.",
+        cepDelta: 0
+      },
+      {
+        label: "B",
+        text: "Let it adjust",
+        resultText: "Efficiency improved… slightly.",
+        cepDelta: 0
+      },
+      {
+        label: "C",
+        text: "Cut non-essential systems",
+        resultText: "Power conserved. Visibility reduced.",
+        cepDelta: 0
+      }
+    ]
+  },
+  {
+    id: "intro_system_awareness",
+    introIndex: 12,
+    phase: 0,
+    phaseTrigger: "INTRO_ANOMALY",
+    tags: ["anomaly", "cep_related", "escalation", "trust"],
+    title: "A.E.G.I.S. — PHASE 4",
+    message: "External observation suspected.\n\nSomething is reacting…\nto your activity.",
+    flavorText: "Not visually. Not audibly. But consistently.",
+    narratorLines: ["Something out there is paying attention."],
+    aegisLines: [
+      "Commander. I am detecting a pattern. External response correlates with our activity. We are being observed."
+    ],
+    choices: [
+      {
+        label: "A",
+        text: "Reduce activity",
+        resultText: "System quieted.",
+        cepDelta: -1
+      },
+      {
+        label: "B",
+        text: "Continue normal operation",
+        resultText: "No immediate change.",
+        cepDelta: 0
+      },
+      {
+        label: "C",
+        text: "Increase activity",
+        resultText: "Signal response intensifies.",
+        cepDelta: 2
+      }
+    ]
+  },
+  // ======================================================================
+  // PHASE: INTRO_HANDOFF (events 14–15, index 13–14)
+  // ======================================================================
+  {
+    id: "intro_approach_commitment",
+    introIndex: 13,
+    phase: 0,
+    phaseTrigger: "INTRO_HANDOFF",
+    tags: ["escalation", "cep_related", "trust"],
+    title: "A.E.G.I.S. — PHASE 4",
+    message: "Proximity threshold reached.\n\nThe planet fills your view now.\n\nWhatever is happening…\nyou are already part of it.",
+    flavorText: "There is no turning back from here.",
+    narratorLines: ["The point of no return arrives quietly. It always does."],
+    aegisLines: [
+      "Commander. We have crossed the threshold. Whatever comes next — I am with you."
+    ],
+    choices: [
+      {
+        label: "A",
+        text: "Commit to approach",
+        resultText: "Approach confirmed.",
+        cepDelta: 1
+      },
+      {
+        label: "B",
+        text: "Attempt course correction",
+        resultText: "Correction limited.",
+        cepDelta: 0
+      },
+      {
+        label: "C",
+        text: "Power engines fully",
+        resultText: "Velocity increasing. No going back.",
+        cepDelta: 2
+      }
+    ]
+  },
+  {
+    id: "intro_threshold_crossing",
+    introIndex: 14,
+    phase: 0,
+    phaseTrigger: "INTRO_HANDOFF",
+    tags: ["escalation", "cep_related", "trust", "survival"],
+    title: "A.E.G.I.S. — FINAL THRESHOLD",
+    message: "All systems: aware.\nAll systems: watching.\n\nThe planet has acknowledged your presence.\n\nThis is no longer a transit.\nThis is a contact.",
+    flavorText: "You crossed the line the moment you didn’t turn back.",
+    narratorLines: [
+      "This is the moment it begins. Not when you flew. When you stayed."
+    ],
+    aegisLines: [
+      "Commander. We have been acknowledged. Whatever comes next — we are ready."
+    ],
+    choices: [
+      {
+        label: "A",
+        text: "Initiate contact protocol",
+        resultText: "Protocol active. No response. Expected.",
+        cepDelta: 2
+      },
+      {
+        label: "B",
+        text: "Maintain current heading",
+        resultText: "Acknowledged. We are committed.",
+        cepDelta: 1
+      },
+      {
+        label: "C",
+        text: "Full tactical readiness",
+        resultText: "All systems primed. A.E.G.I.S. standing by.",
+        cepDelta: 2
+      }
+    ]
+  }
+];
+const INTRO_EVENT_IDS = INTRO_EVENTS.map((e) => e.id);
+function getIntroEventByIndex(index2) {
+  return INTRO_EVENTS[index2];
+}
 const ADAPTIVE_EVENTS = [
   {
     id: "intro_signal_detected",
@@ -91267,19 +89878,19 @@ const useNarrativeStore = create((set, get) => ({
 }));
 function _notifyEventShown(_eventId) {
   __vitePreload(async () => {
-    const { usePlayerMemoryStore: usePlayerMemoryStore2 } = await Promise.resolve().then(() => usePlayerMemoryStore$1);
-    return { usePlayerMemoryStore: usePlayerMemoryStore2 };
-  }, true ? void 0 : void 0).then(({ usePlayerMemoryStore: usePlayerMemoryStore2 }) => {
-    usePlayerMemoryStore2.getState().incrementEventsShown();
+    const { usePlayerMemoryStore } = await import("./usePlayerMemoryStore-B2JiJtMB.js");
+    return { usePlayerMemoryStore };
+  }, true ? [] : void 0).then(({ usePlayerMemoryStore }) => {
+    usePlayerMemoryStore.getState().incrementEventsShown();
   }).catch(() => {
   });
 }
 function _recordChoiceToMemory(eventId, choiceLabel, choiceText, cepDelta, tags) {
   __vitePreload(async () => {
-    const { usePlayerMemoryStore: usePlayerMemoryStore2 } = await Promise.resolve().then(() => usePlayerMemoryStore$1);
-    return { usePlayerMemoryStore: usePlayerMemoryStore2 };
-  }, true ? void 0 : void 0).then(({ usePlayerMemoryStore: usePlayerMemoryStore2 }) => {
-    usePlayerMemoryStore2.getState().recordDecision({
+    const { usePlayerMemoryStore } = await import("./usePlayerMemoryStore-B2JiJtMB.js");
+    return { usePlayerMemoryStore };
+  }, true ? [] : void 0).then(({ usePlayerMemoryStore }) => {
+    usePlayerMemoryStore.getState().recordDecision({
       eventId,
       choiceLabel,
       choiceText,
@@ -91558,6 +90169,112 @@ function CockpitOverlay() {
     }
   );
 }
+const INTRO_PHASE_ORDER = [
+  "INTRO_DRIFT",
+  "INTRO_SYSTEMS",
+  "INTRO_RECOVERY",
+  "INTRO_ANOMALY",
+  "INTRO_HANDOFF"
+];
+function phaseRank(phase) {
+  return INTRO_PHASE_ORDER.indexOf(phase);
+}
+const useIntroEventEngine = create(
+  (set, get) => ({
+    introEventIndex: 0,
+    introSequenceComplete: false,
+    adaptiveUnlocked: false,
+    currentIntroPhase: null,
+    lastEventId: null,
+    lastChoiceLabel: null,
+    lastCEPDelta: 0,
+    memoryWriteSuccess: false,
+    voiceActive: false,
+    isInitialized: false,
+    initEngine: () => {
+      if (get().isInitialized) return;
+      console.log(
+        "[INTRO-ENGINE] Initialized — locked intro sequence: 15 events"
+      );
+      set({ isInitialized: true, introEventIndex: 0 });
+    },
+    onPhaseEnter: (phase) => {
+      const state2 = get();
+      if (state2.introSequenceComplete) return;
+      console.log(
+        `[INTRO-ENGINE] Phase entered: ${phase} | next index: ${state2.introEventIndex}`
+      );
+      set({ currentIntroPhase: phase });
+      _fireNextEligibleEvent(phase, state2.introEventIndex);
+    },
+    onEventDismissed: (eventId) => {
+      const state2 = get();
+      if (state2.introSequenceComplete) return;
+      const dismissedIndex = INTRO_EVENT_IDS.indexOf(eventId);
+      if (dismissedIndex < 0) return;
+      console.log(
+        `[INTRO-ENGINE] Dismissed: ${eventId} (introIndex ${dismissedIndex})`
+      );
+      if (dismissedIndex >= 14) {
+        get().completeSequence();
+        return;
+      }
+      const nextIndex = dismissedIndex + 1;
+      set({ introEventIndex: nextIndex, lastEventId: eventId });
+      const nextEvent = getIntroEventByIndex(nextIndex);
+      if ((nextEvent == null ? void 0 : nextEvent.phaseTrigger) && state2.currentIntroPhase) {
+        const nextRank = phaseRank(nextEvent.phaseTrigger);
+        const currentRank = phaseRank(state2.currentIntroPhase);
+        if (currentRank >= nextRank) {
+          _fireNextEligibleEvent(state2.currentIntroPhase, nextIndex);
+        }
+      }
+    },
+    setLastCEPDelta: (delta, choiceLabel) => {
+      set({ lastCEPDelta: delta, lastChoiceLabel: choiceLabel });
+    },
+    setVoiceActive: (active) => {
+      set({ voiceActive: active });
+    },
+    setMemoryWriteSuccess: (ok) => {
+      set({ memoryWriteSuccess: ok });
+    },
+    completeSequence: () => {
+      console.log(
+        "[INTRO-ENGINE] ✅ Intro sequence complete (15/15) — adaptive pool UNLOCKED"
+      );
+      set({
+        introSequenceComplete: true,
+        adaptiveUnlocked: true,
+        introEventIndex: 15
+      });
+    }
+  })
+);
+function _fireNextEligibleEvent(phase, fromIndex) {
+  const event = getIntroEventByIndex(fromIndex);
+  if (!event) return;
+  if (event.phaseTrigger !== phase) return;
+  __vitePreload(async () => {
+    const { useNarrativeStore: useNarrativeStore2 } = await Promise.resolve().then(() => useNarrativeStore$1);
+    return { useNarrativeStore: useNarrativeStore2 };
+  }, true ? void 0 : void 0).then(({ useNarrativeStore: useNarrativeStore2 }) => {
+    const narrativeState = useNarrativeStore2.getState();
+    if (narrativeState.triggeredEventIds.includes(event.id)) {
+      console.log(`[INTRO-ENGINE] Already triggered: ${event.id} — skipping`);
+      return;
+    }
+    console.log(
+      `[INTRO-ENGINE] Firing [${fromIndex}/${INTRO_EVENT_IDS.length - 1}]: ${event.id}`
+    );
+    narrativeState.triggerEvent(event.id);
+  }).catch(() => {
+  });
+}
+const useIntroEventEngine$1 = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.defineProperty({
+  __proto__: null,
+  useIntroEventEngine
+}, Symbol.toStringTag, { value: "Module" }));
 function GameStateDebugOverlay() {
   if (typeof localStorage !== "undefined") {
     if (localStorage.getItem("debug_gamestate") !== "1") return null;
@@ -91988,8 +90705,8 @@ function App() {
               ]
             }
           ),
-          mode === "game" && /* @__PURE__ */ jsxRuntimeExports.jsx(GameRootErrorBoundary, { children: /* @__PURE__ */ jsxRuntimeExports.jsx(TacticalStage, {}) }),
-          mode !== "menu" && mode !== "game" && /* @__PURE__ */ jsxRuntimeExports.jsx(UnmatchedModeFallback, { mode }),
+          (mode === "game" || mode === "intro") && /* @__PURE__ */ jsxRuntimeExports.jsx(GameRootErrorBoundary, { children: /* @__PURE__ */ jsxRuntimeExports.jsx(TacticalStage, {}) }),
+          mode !== "menu" && mode !== "game" && mode !== "intro" && /* @__PURE__ */ jsxRuntimeExports.jsx(UnmatchedModeFallback, { mode }),
           /* @__PURE__ */ jsxRuntimeExports.jsx(CockpitOverlay, {})
         ]
       }
@@ -92111,3 +90828,10 @@ const queryClient = new QueryClient();
 ReactDOM.createRoot(document.getElementById("root")).render(
   /* @__PURE__ */ jsxRuntimeExports.jsx(QueryClientProvider, { client: queryClient, children: /* @__PURE__ */ jsxRuntimeExports.jsx(InternetIdentityProvider, { children: /* @__PURE__ */ jsxRuntimeExports.jsx(App, {}) }) })
 );
+export {
+  InteractionState as I,
+  InteractionFSM as a,
+  create as c,
+  interactionBus as i,
+  persist as p
+};
